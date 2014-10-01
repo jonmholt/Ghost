@@ -853,7 +853,7 @@ var path           = require('path'),
         //
         // It is otherwise the same as running `grunt`, but is only used when running Ghost in the `production` env.
         grunt.registerTask('prod', 'Build JS & templates for production',
-            ['handlebars', 'concat', 'uglify', 'copy:prod', 'master-warn']);
+            ['handlebars', 'concat', 'uglify', 'copy:prod']);
 
         // ### Default asset build
         // `grunt` - default grunt task
