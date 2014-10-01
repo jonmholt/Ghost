@@ -39,8 +39,6 @@ projectFilesBackup
 /_site
 /content/tmp/*
 /content/data/*
-/content/apps/**/*
-/content/themes/**/*
 /content/images/**/*
 !/content/themes/casper/**
 !/README.md
@@ -58,3 +56,6 @@ config.js
 
 # Coverage reports
 coverage.html
+
+# For 2520
+deploy.sh
