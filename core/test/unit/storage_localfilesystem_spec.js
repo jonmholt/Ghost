@@ -2,6 +2,7 @@
 var fs = require('fs-extra'),
     path = require('path'),
     should = require('should'),
+    config = require('../../server/config'),
     sinon = require('sinon'),
     when = require('when'),
     localfilesystem = require('../../server/storage/localfilesystem');
@@ -38,7 +39,7 @@ describe('Local File System Storage', function () {
         localfilesystem.save(image).then(function (url) {
             url.should.equal('/content/images/2013/Sep/IMAGE.jpg');
             return done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('should send correct path to image when original file has spaces', function (done) {
@@ -46,7 +47,7 @@ describe('Local File System Storage', function () {
         localfilesystem.save(image).then(function (url) {
             url.should.equal('/content/images/2013/Sep/AN-IMAGE.jpg');
             return done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('should send correct path to image when date is in Jan 2014', function (done) {
@@ -55,7 +56,7 @@ describe('Local File System Storage', function () {
         localfilesystem.save(image).then(function (url) {
             url.should.equal('/content/images/2014/Jan/IMAGE.jpg');
             return done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('should create month and year directory', function (done) {
@@ -63,7 +64,7 @@ describe('Local File System Storage', function () {
             fs.mkdirs.calledOnce.should.be.true;
             fs.mkdirs.args[0][0].should.equal(path.resolve('./content/images/2013/Sep'));
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('should copy temp file to new location', function (done) {
@@ -72,7 +73,7 @@ describe('Local File System Storage', function () {
             fs.copy.args[0][0].should.equal('tmp/123456.jpg');
             fs.copy.args[0][1].should.equal(path.resolve('./content/images/2013/Sep/IMAGE.jpg'));
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('should not leave temporary file when uploading', function (done) {
@@ -80,7 +81,7 @@ describe('Local File System Storage', function () {
             fs.unlink.calledOnce.should.be.true;
             fs.unlink.args[0][0].should.equal('tmp/123456.jpg');
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('can upload two different images with the same name without overwriting the first', function (done) {
@@ -97,7 +98,7 @@ describe('Local File System Storage', function () {
         localfilesystem.save(image).then(function (url) {
             url.should.equal('/content/images/2013/Sep/IMAGE-1.jpg');
             return done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('can upload five different images with the same name without overwriting the first', function (done) {
@@ -119,9 +120,30 @@ describe('Local File System Storage', function () {
         localfilesystem.save(image).then(function (url) {
             url.should.equal('/content/images/2013/Sep/IMAGE-4.jpg');
             return done();
-        }).then(null, done);
+        }).catch(done);
     });
 
+    describe('when a custom content path is used', function () {
+        var origContentPath = config().paths.contentPath;
+        var origImagesPath = config().paths.imagesPath;
+
+        beforeEach(function () {
+            config().paths.contentPath = config().paths.appRoot + '/var/ghostcms';
+            config().paths.imagesPath = config().paths.appRoot + '/var/ghostcms/' + config().paths.imagesRelPath;
+        });
+
+        afterEach(function () {
+            config().paths.contentPath = origContentPath;
+            config().paths.imagesPath = origImagesPath;
+        });
+
+        it('should send the correct path to image', function (done) {
+            localfilesystem.save(image).then(function (url) {
+                url.should.equal('/content/images/2013/Sep/IMAGE.jpg');
+                return done();
+            }).catch(done);
+        });
+    });
 
     describe('on Windows', function () {
         var truePathSep = path.sep;
@@ -139,9 +161,17 @@ describe('Local File System Storage', function () {
             path.sep = '\\';
             path.join.returns('content\\images\\2013\\Sep\\IMAGE.jpg');
             localfilesystem.save(image).then(function (url) {
-                url.should.equal('/content/images/2013/Sep/IMAGE.jpg');
+                if (truePathSep === '\\') {
+                    url.should.equal('/content/images/2013/Sep/IMAGE.jpg');
+                } else {
+                    // if this unit test is run on an OS that uses forward slash separators,
+                    // localfilesystem.save() will use a path.relative() call on 
+                    // one path with backslash separators and one path with forward
+                    // slashes and it returns a path that needs to be normalized
+                    path.normalize(url).should.equal('/content/images/2013/Sep/IMAGE.jpg');
+                }
                 return done();
-            }).then(null, done);
+            }).catch(done);
         });
     });
 });

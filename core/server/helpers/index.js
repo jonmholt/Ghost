@@ -7,7 +7,7 @@ var downsize        = require('downsize'),
 
     api             = require('../api'),
     config          = require('../config'),
-    errors          = require('../errorHandling'),
+    errors          = require('../errors'),
     filters         = require('../filters'),
     template        = require('./template'),
     schema          = require('../data/schema').checks,
@@ -38,13 +38,13 @@ if (!isProduction) {
     hbs.handlebars.logger.level = 0;
 }
 
-/**
- * [ description]
- * @todo ghost core helpers + a way for themes to register them
- * @param  {Object} context date object
- * @param  {*} options
- * @return {Object} A Moment time / date object
- */
+
+ // [ description]
+ //
+ // @param  {Object} context date object
+ // @param  {*} options
+ // @return {Object} A Moment time / date object
+
 coreHelpers.date = function (context, options) {
     if (!options && context.hasOwnProperty('hash')) {
         options = context;
@@ -134,7 +134,7 @@ coreHelpers.pageUrl = function (context, block) {
 //
 // *Usage example:*
 // `{{url}}`
-// `{{url absolute}}`
+// `{{url absolute="true"}}`
 //
 // Returns the URL for the current object context
 // i.e. If inside a post context will return post permalink
@@ -158,17 +158,21 @@ coreHelpers.url = function (options) {
 // *Usage example:*
 // `{{asset "css/screen.css"}}`
 // `{{asset "css/screen.css" ghost="true"}}`
+// `{{asset "css/screen.css" ember="true"}}`
 // Returns the path to the specified asset. The ghost
 // flag outputs the asset path for the Ghost admin
 coreHelpers.asset = function (context, options) {
     var output = '',
-        isAdmin = options && options.hash && options.hash.ghost;
+        isAdmin = options && options.hash && options.hash.ghost,
+        isEmberAdmin = options && options.hash && options.hash.ember;
 
     output += config().paths.subdir + '/';
 
     if (!context.match(/^favicon\.ico$/) && !context.match(/^shared/) && !context.match(/^asset/)) {
         if (isAdmin) {
             output += 'ghost/';
+        } else if (isEmberAdmin) {
+            output += 'ghost/ember/';
         } else {
             output += 'assets/';
         }
@@ -385,8 +389,9 @@ coreHelpers.body_class = function (options) {
         classes.push('page');
     }
 
-    return api.settings.read('activeTheme').then(function (activeTheme) {
-        var paths = config().paths.availableThemes[activeTheme.value],
+    return api.settings.read({context: {internal: true}, key: 'activeTheme'}).then(function (response) {
+        var activeTheme = response.settings[0],
+            paths = config().paths.availableThemes[activeTheme.value],
             view;
 
         if (post) {
@@ -445,8 +450,8 @@ coreHelpers.ghost_head = function (options) {
 
     head.push('<meta name="generator" content="Ghost ' + trimmedVersion + '" />');
 
-    head.push('<link rel="alternate" type="application/rss+xml" title="'
-        + _.escape(blog.title)  + '" href="' + config.urlFor('rss') + '">');
+    head.push('<link rel="alternate" type="application/rss+xml" title="' +
+        _.escape(blog.title)  + '" href="' + config.urlFor('rss') + '">');
 
     return coreHelpers.url.call(self, {hash: {absolute: true}}).then(function (url) {
         head.push('<link rel="canonical" href="' + url + '" />');
@@ -460,10 +465,11 @@ coreHelpers.ghost_head = function (options) {
 
 coreHelpers.ghost_foot = function (options) {
     /*jshint unused:false*/
-    var foot = [];
+    var jquery = isProduction ? 'jquery.min.js' : 'jquery.js',
+        foot = [];
 
     foot.push(scriptTemplate({
-        source: config().paths.subdir + '/public/jquery.js',
+        source: config().paths.subdir + '/public/' + jquery,
         version: coreHelpers.assetHash
     }));
 
@@ -491,7 +497,7 @@ coreHelpers.meta_title = function (options) {
 
     return filters.doFilter('meta_title', title).then(function (title) {
         title = title || "";
-        return new hbs.handlebars.SafeString(title.trim());
+        return title.trim();
     });
 };
 
@@ -511,31 +517,32 @@ coreHelpers.meta_description = function (options) {
 
     return filters.doFilter('meta_description', description).then(function (description) {
         description = description || "";
-        return new hbs.handlebars.SafeString(description.trim());
+        return description.trim();
     });
 };
 
 /**
  * Localised string helpers
  *
- * @param String key
- * @param String default translation
+ * @param {String} key
+ * @param {String} default translation
  * @param {Object} options
- * @return String A correctly internationalised string
+ * @return {String} A correctly internationalised string
  */
 coreHelpers.e = function (key, defaultString, options) {
     var output;
-    when.all([
+    return when.all([
         api.settings.read('defaultLang'),
         api.settings.read('forceI18n')
     ]).then(function (values) {
-        if (values[0].value === 'en'
-                && _.isEmpty(options.hash)
-                && _.isEmpty(values[1].value)) {
+        if (values[0].settings[0] === 'en_US' &&
+                _.isEmpty(options.hash) &&
+                values[1].settings[0] !== 'true') {
             output = defaultString;
         } else {
-            output = polyglot().t(key, options.hash);
+            output = polyglot.t(key, options.hash);
         }
+
         return output;
     });
 };
@@ -607,6 +614,7 @@ coreHelpers.foreach = function (context, options) {
     if (i === 0) {
         ret = inverse(this);
     }
+
     return ret;
 };
 
@@ -647,24 +655,24 @@ coreHelpers.has = function (options) {
 coreHelpers.pagination = function (options) {
     /*jshint unused:false*/
     if (!_.isObject(this.pagination) || _.isFunction(this.pagination)) {
-        errors.logAndThrowError('pagination data is not an object or is a function');
-        return;
+        return errors.logAndThrowError('pagination data is not an object or is a function');
     }
-    if (_.isUndefined(this.pagination.page) || _.isUndefined(this.pagination.pages)
-            || _.isUndefined(this.pagination.total) || _.isUndefined(this.pagination.limit)) {
-        errors.logAndThrowError('All values must be defined for page, pages, limit and total');
-        return;
+
+    if (_.isUndefined(this.pagination.page) || _.isUndefined(this.pagination.pages) ||
+            _.isUndefined(this.pagination.total) || _.isUndefined(this.pagination.limit)) {
+        return errors.logAndThrowError('All values must be defined for page, pages, limit and total');
     }
-    if ((!_.isUndefined(this.pagination.next) && !_.isNumber(this.pagination.next))
-            || (!_.isUndefined(this.pagination.prev) && !_.isNumber(this.pagination.prev))) {
-        errors.logAndThrowError('Invalid value, Next/Prev must be a number');
-        return;
+
+    if ((!_.isNull(this.pagination.next) && !_.isNumber(this.pagination.next)) ||
+            (!_.isNull(this.pagination.prev) && !_.isNumber(this.pagination.prev))) {
+        return errors.logAndThrowError('Invalid value, Next/Prev must be a number');
     }
-    if (!_.isNumber(this.pagination.page) || !_.isNumber(this.pagination.pages)
-            || !_.isNumber(this.pagination.total) || !_.isNumber(this.pagination.limit)) {
-        errors.logAndThrowError('Invalid value, check page, pages, limit and total are numbers');
-        return;
+
+    if (!_.isNumber(this.pagination.page) || !_.isNumber(this.pagination.pages) ||
+            !_.isNumber(this.pagination.total) || !_.isNumber(this.pagination.limit)) {
+        return errors.logAndThrowError('Invalid value, check page, pages, limit and total are numbers');
     }
+
     var context = _.merge({}, this.pagination);
 
     if (this.tag !== undefined) {

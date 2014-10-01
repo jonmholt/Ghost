@@ -3,11 +3,9 @@ var config        = require('../config'),
     path          = require('path'),
     when          = require('when'),
     api           = require('../api'),
-    mailer        = require('../mail'),
-    errors        = require('../errorHandling'),
+    errors        = require('../errors'),
     storage       = require('../storage'),
     updateCheck   = require('../update-check'),
-
     adminNavbar,
     adminControllers,
     loginSecurity = [];
@@ -43,10 +41,22 @@ function setSelected(list, name) {
 }
 
 adminControllers = {
+    'index': function (req, res) {
+        /*jslint unparam:true*/
+        var userData;
+
+        if (req.session && req.session.userData) {
+            userData = JSON.stringify(req.session.userData);
+        }
+
+        res.render('default-ember', {
+            user: userData
+        });
+    },
     // Route: index
     // Path: /ghost/
     // Method: GET
-    'index': function (req, res) {
+    'indexold': function (req, res) {
         /*jslint unparam:true*/
         function renderIndex() {
             res.render('content', {
@@ -69,10 +79,23 @@ adminControllers = {
         });
     },
     // Route: editor
-    // Path: /ghost/editor(/:id)?/
+    // Path: /ghost/editor(/:id)?(/:action)?/
     // Method: GET
     'editor': function (req, res) {
-        if (req.params.id !== undefined) {
+        if (req.params.id && req.params.action) {
+            if (req.params.action !== 'view') {
+                return errors.error404(req, res);
+            }
+
+            api.posts.read({ id: req.params.id }).then(function (result) {
+                return config.urlForPost(api.settings, result.posts[0]).then(function (url) {
+                    return res.redirect(url);
+                });
+            }, function () {
+                return errors.error404(req, res);
+            });
+
+        } else if (req.params.id !== undefined) {
             res.render('editor', {
                 bodyClass: 'editor',
                 adminNav: setSelected(adminNavbar, 'content')
@@ -114,17 +137,14 @@ adminControllers = {
         },
         // frontend route for downloading a file
         exportContent: function (req, res) {
-            /*jslint unparam:true*/
-            api.db.exportContent().then(function (exportData) {
+            api.db.exportContent({context: {user: req.session.user}}).then(function (exportData) {
                 // send a file to the client
                 res.set('Content-Disposition', 'attachment; filename="GhostData.json"');
                 res.json(exportData);
             }).otherwise(function (err) {
                 var notification = {
                     type: 'error',
-                    message: 'Your export file could not be generated.',
-                    status: 'persistent',
-                    id: 'errorexport'
+                    message: 'Your export file could not be generated. Error: ' + err.message
                 };
 
                 errors.logError(err, 'admin.js', "Your export file could not be generated.");
@@ -167,13 +187,43 @@ adminControllers = {
         var notification = {
             type: 'success',
             message: 'You were successfully signed out',
-            status: 'passive',
-            id: 'successlogout'
+            status: 'passive'
         };
 
         return api.notifications.add(notification).then(function () {
             res.redirect(config().paths.subdir + '/ghost/signin/');
         });
+    },
+    // Route: doSignout
+    // Path: /ghost/signout/
+    // Method: POST
+    'doSignout': function (req, res) {
+        req.session.destroy();
+
+        var statusCode,
+            redirectUrl,
+            errorMessage,
+            notification = {
+            type: 'success',
+            message: 'You were successfully signed out.',
+            status: 'passive'
+        };
+
+        if (_.isUndefined(req.session)) {
+            statusCode = 200;
+            redirectUrl = config().paths.subdir + '/ghost/signin/';
+        } else {
+            notification.type = 'error';
+            notification.message = 'Unable to sign out.';
+
+            statusCode = 500;
+            errorMessage = 'There was a problem logging out. Please try again.';
+        }
+
+        return api.notifications.add(notification).then(function () {
+            res.json(statusCode, {error: errorMessage, redirect: redirectUrl});
+        });
+
     },
     // Route: signin
     // Path: /ghost/signin/
@@ -203,9 +253,16 @@ adminControllers = {
         if (!denied) {
             loginSecurity.push({ip: remoteAddress, time: currentTime});
             api.users.check({email: req.body.email, pw: req.body.password}).then(function (user) {
+                // Carry over the csrf secret
+                var existingSecret = req.session._csrfSecret;
+
                 req.session.regenerate(function (err) {
                     if (!err) {
+                        req.session._csrfSecret = existingSecret;
+
                         req.session.user = user.id;
+                        req.session.userData = user.attributes;
+
                         var redirect = config().paths.subdir + '/ghost/';
                         if (req.body.redirect) {
                             redirect += decodeURIComponent(req.body.redirect);
@@ -215,7 +272,7 @@ adminControllers = {
                         loginSecurity = _.reject(loginSecurity, function (ipTime) {
                             return ipTime.ip === remoteAddress;
                         });
-                        res.json(200, {redirect: redirect});
+                        res.json(200, {redirect: redirect, userData: req.session.userData});
                     }
                 });
             }, function (error) {
@@ -239,31 +296,41 @@ adminControllers = {
     // Route: doSignup
     // Path: /ghost/signup/
     // Method: POST
-    'doSignup': function (req, res) {
+    'doSignup': function (req, res, next) {
         var name = req.body.name,
             email = req.body.email,
-            password = req.body.password;
+            password = req.body.password,
+            users = [{
+                name: name,
+                email: email,
+                password: password
+            }];
 
-        api.users.add({
-            name: name,
-            email: email,
-            password: password
-        }).then(function (user) {
-            api.settings.edit('email', email).then(function () {
+        api.users.register({users: users}).then(function (response) {
+            var user = response.users[0];
+            api.settings.edit({settings: [{key: 'email', value: email}]}, {context: {user: 1}}).then(function () {
                 var message = {
-                    to: email,
-                    subject: 'Your New Ghost Blog',
-                    html: '<p><strong>Hello!</strong></p>' +
-                          '<p>Good news! You\'ve successfully created a brand new Ghost blog over on ' + config().url + '</p>' +
-                          '<p>You can log in to your admin account with the following details:</p>' +
-                          '<p> Email Address: ' + email + '<br>' +
-                          'Password: The password you chose when you signed up</p>' +
-                          '<p>Keep this email somewhere safe for future reference, and have fun!</p>' +
-                          '<p>xoxo</p>' +
-                          '<p>Team Ghost<br>' +
-                          '<a href="https://ghost.org">https://ghost.org</a></p>'
-                };
-                mailer.send(message).otherwise(function (error) {
+                        to: email,
+                        subject: 'Your New Ghost Blog',
+                        html: '<p><strong>Hello!</strong></p>' +
+                              '<p>Good news! You\'ve successfully created a brand new Ghost blog over on ' + config().url + '</p>' +
+                              '<p>You can log in to your admin account with the following details:</p>' +
+                              '<p> Email Address: ' + email + '<br>' +
+                              'Password: The password you chose when you signed up</p>' +
+                              '<p>Keep this email somewhere safe for future reference, and have fun!</p>' +
+                              '<p>xoxo</p>' +
+                              '<p>Team Ghost<br>' +
+                              '<a href="https://ghost.org">https://ghost.org</a></p>'
+                    },
+                    payload = {
+                        mail: [{
+                            message: message,
+                            options: {}
+                        }]
+                    },
+                    existingSecret;
+
+                api.mail.send(payload).otherwise(function (error) {
                     errors.logError(
                         error.message,
                         "Unable to send welcome email, your blog will continue to function.",
@@ -271,13 +338,24 @@ adminControllers = {
                     );
                 });
 
+                // Carry over the csrf secret
+                existingSecret = req.session._csrfSecret;
                 req.session.regenerate(function (err) {
-                    if (!err) {
-                        if (req.session.user === undefined) {
-                            req.session.user = user.id;
-                        }
-                        res.json(200, {redirect: config().paths.subdir + '/ghost/'});
+                    if (err) {
+                        return next(err);
                     }
+
+                    req.session._csrfSecret = existingSecret;
+
+                    if (req.session.user === undefined) {
+                        req.session.user = user.id;
+                        req.session.userData = user;
+                    }
+
+                    res.json(200, {
+                        redirect: config().paths.subdir + '/ghost/',
+                        userData: req.session.userData
+                    });
                 });
             });
         }).otherwise(function (error) {
@@ -302,25 +380,32 @@ adminControllers = {
         var email = req.body.email;
 
         api.users.generateResetToken(email).then(function (token) {
-            var siteLink = '<a href="' + config().url + '">' + config().url + '</a>',
-                resetUrl = config().url.replace(/\/$/, '') +  '/ghost/reset/' + token + '/',
+            var baseUrl = config().forceAdminSSL ? (config().urlSSL || config().url) : config().url,
+                siteLink = '<a href="' + baseUrl + '">' + baseUrl + '</a>',
+                resetUrl = baseUrl.replace(/\/$/, '') +  '/ghost/reset/' + token + '/',
                 resetLink = '<a href="' + resetUrl + '">' + resetUrl + '</a>',
-                message = {
-                    to: email,
-                    subject: 'Reset Password',
-                    html: '<p><strong>Hello!</strong></p>' +
-                          '<p>A request has been made to reset the password on the site ' + siteLink + '.</p>' +
-                          '<p>Please follow the link below to reset your password:<br><br>' + resetLink + '</p>' +
-                          '<p>Ghost</p>'
+                payload = {
+                    mail: [{
+                        message: {
+                            to: email,
+                            subject: 'Reset Password',
+                            html: '<p><strong>Hello!</strong></p>' +
+                                     '<p>A request has been made to reset the password on the site ' + siteLink + '.</p>' +
+                                     '<p>Please follow the link below to reset your password:<br><br>' + resetLink + '</p>' +
+                                     '<p>Ghost</p>'
+                        },
+                        options: {}
+                    }]
                 };
 
-            return mailer.send(message);
+            return api.mail.send(payload);
         }).then(function success() {
+            // TODO: note that this function takes a response as an
+            // argument but jshint complains of it not being used
             var notification = {
                 type: 'success',
                 message: 'Check your email for further instructions',
-                status: 'passive',
-                id: 'successresetpw'
+                status: 'passive'
             };
 
             return api.notifications.add(notification).then(function () {
@@ -354,9 +439,7 @@ adminControllers = {
             // Redirect to forgotten if invalid token
             var notification = {
                 type: 'error',
-                message: 'Invalid or expired token',
-                status: 'persistent',
-                id: 'errorinvalidtoken'
+                message: 'Invalid or expired token'
             };
 
             errors.logError(err, 'admin.js', "Please check the provided token for validity and expiration.");
@@ -378,8 +461,7 @@ adminControllers = {
             var notification = {
                 type: 'success',
                 message: 'Password changed successfully.',
-                status: 'passive',
-                id: 'successresetpw'
+                status: 'passive'
             };
 
             return api.notifications.add(notification).then(function () {

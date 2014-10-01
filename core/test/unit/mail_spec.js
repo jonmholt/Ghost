@@ -83,7 +83,7 @@ describe("Mail", function () {
             mailer.transport.transportType.should.eql('SMTP');
             mailer.transport.sendMail.should.be.a.function;
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('should setup sendmail transport on initialization', function (done) {
@@ -93,7 +93,7 @@ describe("Mail", function () {
             mailer.transport.transportType.should.eql('SENDMAIL');
             mailer.transport.sendMail.should.be.a.function;
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('should fallback to sendmail if no config set', function (done) {
@@ -103,7 +103,7 @@ describe("Mail", function () {
             mailer.transport.transportType.should.eql('SENDMAIL');
             mailer.transport.options.path.should.eql(fakeSendmail);
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('should fallback to sendmail if config is empty', function (done) {
@@ -113,7 +113,7 @@ describe("Mail", function () {
             mailer.transport.transportType.should.eql('SENDMAIL');
             mailer.transport.options.path.should.eql(fakeSendmail);
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('should disable transport if config is empty & sendmail not found', function (done) {
@@ -123,7 +123,7 @@ describe("Mail", function () {
         mailer.init().then(function () {
             should.not.exist(mailer.transport);
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('should disable transport if config is empty & platform is win32', function (done) {
@@ -136,7 +136,7 @@ describe("Mail", function () {
         mailer.init().then(function () {
             should.not.exist(mailer.transport);
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it('should fail to send messages when no transport is set', function (done) {
@@ -146,10 +146,10 @@ describe("Mail", function () {
             mailer.send().then(function () {
                 should.fail();
                 done();
-            }, function (err) {
+            }).catch(function (err) {
                 err.should.be.an.instanceOf(Error);
                 done();
-            });
+            }).catch(done);
         });
     });
 
@@ -165,16 +165,15 @@ describe("Mail", function () {
                 d.reason.should.be.an.instanceOf(Error);
             });
             done();
-        });
+        }).catch(done);
     });
 
-    it('should use from address as configured in config.js', function (done) {
+    it('should use from address as configured in config.js', function () {
         overrideConfig({mail:{fromaddress: 'static@example.com'}});
         mailer.fromAddress().should.equal('static@example.com');
-        done();
     });
 
-    it('should fall back to ghost@[blog.url] as from address', function (done) {
+    it('should fall back to ghost@[blog.url] as from address', function () {
         // Standard domain
         overrideConfig({url: 'http://default.com', mail:{fromaddress: null}});
         mailer.fromAddress().should.equal('ghost@default.com');
@@ -186,7 +185,5 @@ describe("Mail", function () {
         // Strip Port
         overrideConfig({url: 'http://default.com:2368/', mail:{}});
         mailer.fromAddress().should.equal('ghost@default.com');
-
-        done();
     });
 });

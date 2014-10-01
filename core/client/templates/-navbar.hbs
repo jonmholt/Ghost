@@ -1,0 +1,31 @@
+<header id="global-header" class="navbar">
+    <a class="ghost-logo" href="/" data-off-canvas="left" title="/">
+        <span class="hidden">Ghost</span>
+    </a>
+    <nav id="global-nav" role="navigation">
+        <ul id="main-menu" >
+            {{gh-activating-list-item route="posts" title="Content" classNames="content"}}
+            {{gh-activating-list-item route="new" title="New post" classNames="editor"}}
+            {{gh-activating-list-item route="settings" title="Settings" classNames="settings"}}
+
+            <li id="usermenu" class="usermenu subnav">
+                {{#gh-popover-button popoverName="user-menu" tagName="a" href="#" classNames="dropdown"}}
+                    {{#if user.image}}
+                    <img class="avatar" {{bind-attr src="user.image"}} alt="Avatar" />
+                    {{else}}
+                    <img class="avatar" src="/shared/img/user-image.png" alt="Avatar" />
+                    {{/if}}
+                    <span class="name">{{user.name}}</span>
+                {{/gh-popover-button}}
+                {{!-- @TODO: add functionality to allow for dropdown to work --}}
+                {{#gh-popover tagName="ul" classNames="overlay" name="user-menu" closeOnClick="true"}}
+                        <li class="usermenu-profile">{{#link-to "settings.user"}}Your Profile{{/link-to}}</li>
+                        <li class="divider"></li>
+                        <li class="usermenu-help"><a href="http://ghost.org/forum/">Help / Support</a></li>
+                        <li class="divider"></li>
+                        <li class="usermenu-signout">{{#link-to 'signout'}}Sign Out{{/link-to}}</li>
+                {{/gh-popover}}
+            </li>
+        </ul>
+    </nav>
+</header>

@@ -1,0 +1,10 @@
+{{#unless hideNav}}
+    {{partial "navbar"}}
+{{/unless}}
+
+<main role="main" id="main">
+    {{gh-notifications}}
+
+    {{outlet}}
+</main>
+{{outlet modal}}

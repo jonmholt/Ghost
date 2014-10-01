@@ -1,0 +1,28 @@
+<footer id="publish-bar">
+    <nav>
+        <section id="entry-tags" href="#" class="left">
+            <label class="tag-label" for="tags" title="Tags"><span class="hidden">Tags</span></label>
+            <div class="tags">
+            {{#each tags}}
+                <span class="tag">{{name}}</span>
+            {{/each}}
+            </div>
+            <input type="hidden" class="tags-holder" id="tags-holder">
+            <input class="tag-input" id="tags" type="text" data-input-behaviour="tag" />
+            <ul class="suggestions overlay"></ul>
+        </section>
+        <div class="right">
+
+            <section id="entry-controls">
+                {{#gh-popover-button popoverName="post-settings-menu" tagName="a" href="#" classNames="post-settings" title="Post Settings"}}
+                    <span class="hidden">Post Settings</span>
+                {{/gh-popover-button}}
+                {{#gh-popover name="post-settings-menu" classNames="post-settings-menu menu-right"}}
+                    {{view "post-settings-menu-view"}}
+                {{/gh-popover}}
+            </section>
+
+            {{view "editor-save-button" id="entry-actions"}}
+        </div>
+    </nav>
+</footer>

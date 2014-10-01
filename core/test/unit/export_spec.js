@@ -4,10 +4,11 @@ var testUtils = require('../utils'),
     sinon = require('sinon'),
     when = require('when'),
     _ = require("lodash"),
-    errors = require('../../server/errorHandling'),
+    errors = require('../../server/errors'),
 
     // Stuff we are testing
     migration = require('../../server/data/migration'),
+    versioning = require('../../server/data/versioning'),
     exporter = require('../../server/data/export'),
     Settings = require('../../server/models/settings').Settings;
 
@@ -15,28 +16,32 @@ describe("Exporter", function () {
 
     should.exist(exporter);
 
+    var sandbox;
+
     before(function (done) {
         testUtils.clearData().then(function () {
             done();
-        }, done);
+        }).catch(done);
     });
 
     beforeEach(function (done) {
+        sandbox = sinon.sandbox.create();
         testUtils.initData().then(function () {
             done();
-        }, done);
+        }).catch(done);
     });
 
     afterEach(function (done) {
+        sandbox.restore();
         testUtils.clearData().then(function () {
             done();
-        }, done);
+        }).catch(done);
     });
 
     it("exports data", function (done) {
         // Stub migrations to return 000 as the current database version
-        var migrationStub = sinon.stub(migration, "getDatabaseVersion", function () {
-            return when.resolve("002");
+        var versioningStub = sandbox.stub(versioning, "getDatabaseVersion", function () {
+            return when.resolve("003");
         });
 
         exporter().then(function (exportData) {
@@ -48,8 +53,8 @@ describe("Exporter", function () {
             should.exist(exportData.meta);
             should.exist(exportData.data);
 
-            exportData.meta.version.should.equal("002");
-            _.findWhere(exportData.data.settings, {key: "databaseVersion"}).value.should.equal("002");
+            exportData.meta.version.should.equal("003");
+            _.findWhere(exportData.data.settings, {key: "databaseVersion"}).value.should.equal("003");
 
             _.each(tables, function (name) {
                 should.exist(exportData.data[name]);
@@ -57,8 +62,8 @@ describe("Exporter", function () {
             // should not export sqlite data
             should.not.exist(exportData.data.sqlite_sequence);
 
-            migrationStub.restore();
+            versioningStub.restore();
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 });

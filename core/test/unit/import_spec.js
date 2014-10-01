@@ -1,37 +1,46 @@
 /*globals describe, beforeEach, it*/
 var testUtils = require('../utils'),
-    should = require('should'),
-    sinon = require('sinon'),
-    when = require('when'),
-    assert = require('assert'),
-    _ = require("lodash"),
-    errors = require('../../server/errorHandling'),
+    should    = require('should'),
+    sinon     = require('sinon'),
+    when      = require('when'),
+    assert    = require('assert'),
+    _         = require("lodash"),
+    errors    = require('../../server/errors'),
 
     // Stuff we are testing
-    knex = require("../../server/models/base").knex,
-    migration = require('../../server/data/migration'),
-    exporter = require('../../server/data/export'),
-    importer = require('../../server/data/import'),
+    knex        = require('../../server/models/base').knex,
+    migration   = require('../../server/data/migration'),
+    versioning  = require('../../server/data/versioning'),
+    exporter    = require('../../server/data/export'),
+    importer    = require('../../server/data/import'),
     Importer000 = require('../../server/data/import/000'),
     Importer001 = require('../../server/data/import/001'),
     Importer002 = require('../../server/data/import/002'),
-    fixtures = require('../../server/data/fixtures'),
-    Settings = require('../../server/models/settings').Settings;
+    Importer003 = require('../../server/data/import/003'),
+    fixtures    = require('../../server/data/fixtures'),
+    Settings    = require('../../server/models/settings').Settings;
 
 describe("Import", function () {
 
     should.exist(exporter);
     should.exist(importer);
 
+    var sandbox;
+
     beforeEach(function (done) {
+        sandbox = sinon.sandbox.create();
         // clear database... we need to initialise it manually for each test
         testUtils.clearData().then(function () {
             done();
-        }, done);
+        }).catch(done);
+    });
+
+    afterEach(function () {
+        sandbox.restore();
     });
 
     it("resolves 000", function (done) {
-        var importStub = sinon.stub(Importer000, "importData", function () {
+        var importStub = sandbox.stub(Importer000, "importData", function () {
                 return when.resolve();
             }),
             fakeData = { test: true };
@@ -42,11 +51,11 @@ describe("Import", function () {
             importStub.restore();
 
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it("resolves 001", function (done) {
-        var importStub = sinon.stub(Importer001, "importData", function () {
+        var importStub = sandbox.stub(Importer001, "importData", function () {
                 return when.resolve();
             }),
             fakeData = { test: true };
@@ -57,11 +66,11 @@ describe("Import", function () {
             importStub.restore();
 
             done();
-        }).then(null, done);
+        }).catch(done);
     });
 
     it("resolves 002", function (done) {
-        var importStub = sinon.stub(Importer002, "importData", function () {
+        var importStub = sandbox.stub(Importer002, "importData", function () {
                 return when.resolve();
             }),
             fakeData = { test: true };
@@ -72,7 +81,22 @@ describe("Import", function () {
             importStub.restore();
 
             done();
-        }).then(null, done);
+        }).catch(done);
+    });
+
+    it("resolves 003", function (done) {
+        var importStub = sandbox.stub(Importer003, "importData", function () {
+                return when.resolve();
+            }),
+            fakeData = { test: true };
+
+        importer("003", fakeData).then(function () {
+            importStub.calledWith(fakeData).should.equal(true);
+
+            importStub.restore();
+
+            done();
+        }).catch(done);
     });
 
     describe("000", function () {
@@ -80,23 +104,17 @@ describe("Import", function () {
 
         beforeEach(function (done) {
             // migrate to current version
-            migration.migrateUp().then(function () {
-                // Load the fixtures
-                return fixtures.populateFixtures();
-            }).then(function () {
-                // Initialise the default settings
-                return Settings.populateDefaults();
-            }).then(function () {
+            migration.migrateUpFreshDb().then(function () {
                 return testUtils.insertDefaultUser();
             }).then(function () {
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
 
         it("imports data from 000", function (done) {
             var exportData,
-                migrationStub = sinon.stub(migration, "getDatabaseVersion", function () {
+                versioningStub = sandbox.stub(versioning, "getDatabaseVersion", function () {
                     return when.resolve("000");
                 });
 
@@ -129,15 +147,15 @@ describe("Import", function () {
 
                 // test settings
                 settings.length.should.be.above(0, 'Wrong number of settings');
-                _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("002", 'Wrong database version');
+                _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("003", 'Wrong database version');
 
                 // test tags
                 tags.length.should.equal(exportData.data.tags.length, 'no new tags');
 
-                migrationStub.restore();
+                versioningStub.restore();
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
     });
 
@@ -146,17 +164,11 @@ describe("Import", function () {
 
         beforeEach(function (done) {
             // migrate to current version
-            migration.migrateUp().then(function () {
-                // Load the fixtures
-                return fixtures.populateFixtures();
-            }).then(function () {
-                    // Initialise the default settings
-                return Settings.populateDefaults();
-            }).then(function () {
+            migration.migrateUpFreshDb().then(function () {
                 return testUtils.insertDefaultUser();
             }).then(function () {
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it("safely imports data from 001", function (done) {
@@ -207,7 +219,7 @@ describe("Import", function () {
 
                 // test settings
                 settings.length.should.be.above(0, 'Wrong number of settings');
-                _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("002", 'Wrong database version');
+                _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("003", 'Wrong database version');
 
                 // activeTheme should NOT have been overridden
                 _.findWhere(settings, {key: "activeTheme"}).value.should.equal("casper", 'Wrong theme');
@@ -229,7 +241,7 @@ describe("Import", function () {
                 assert.equal(new Date(posts[1].published_at).getTime(), timestamp);
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it("doesn't import invalid post data from 001", function (done) {
@@ -246,7 +258,9 @@ describe("Import", function () {
             }).then(function () {
                 (1).should.eql(0, 'Data import should not resolve promise.');
             }, function (error) {
-                error.should.eql('Error importing data: Value in [posts.title] exceeds maximum length of 150 characters.');
+
+                error[0].message.should.eql('Value in [posts.title] exceeds maximum length of 150 characters.');
+                error[0].type.should.eql('ValidationError');
 
                 when.all([
                     knex("users").select(),
@@ -270,7 +284,7 @@ describe("Import", function () {
 
                     // test settings
                     settings.length.should.be.above(0, 'Wrong number of settings');
-                    _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("002", 'Wrong database version');
+                    _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("003", 'Wrong database version');
 
                     // test tags
                     tags.length.should.equal(exportData.data.tags.length, 'no new tags');
@@ -278,7 +292,7 @@ describe("Import", function () {
                     done();
                 });
 
-            }).then(null, done);
+            }).catch(done);
         });
 
         it("doesn't import invalid settings data from 001", function (done) {
@@ -292,7 +306,9 @@ describe("Import", function () {
             }).then(function () {
                 (1).should.eql(0, 'Data import should not resolve promise.');
             }, function (error) {
-                error.should.eql('Error importing data: Value in [settings.key] cannot be blank.');
+
+                error[0].message.should.eql('Setting key cannot be empty.');
+                error[0].type.should.eql('ValidationError');
 
                 when.all([
                     knex("users").select(),
@@ -316,7 +332,7 @@ describe("Import", function () {
 
                     // test settings
                     settings.length.should.be.above(0, 'Wrong number of settings');
-                    _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("002", 'Wrong database version');
+                    _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("003", 'Wrong database version');
 
                     // test tags
                     tags.length.should.equal(exportData.data.tags.length, 'no new tags');
@@ -324,26 +340,20 @@ describe("Import", function () {
                     done();
                 });
 
-            }).then(null, done);
+            }).catch(done);
         });
     });
 
     describe("002", function () {
-        should.exist(Importer001);
+        should.exist(Importer002);
 
         beforeEach(function (done) {
             // migrate to current version
-            migration.migrateUp().then(function () {
-                // Load the fixtures
-                return fixtures.populateFixtures();
-            }).then(function () {
-                    // Initialise the default settings
-                return Settings.populateDefaults();
-            }).then(function () {
+            migration.migrateUpFreshDb().then(function () {
                 return testUtils.insertDefaultUser();
             }).then(function () {
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it("safely imports data from 002", function (done) {
@@ -394,7 +404,7 @@ describe("Import", function () {
 
                 // test settings
                 settings.length.should.be.above(0, 'Wrong number of settings');
-                _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("002", 'Wrong database version');
+                _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("003", 'Wrong database version');
 
                 // activeTheme should NOT have been overridden
                 _.findWhere(settings, {key: "activeTheme"}).value.should.equal("casper", 'Wrong theme');
@@ -416,7 +426,9 @@ describe("Import", function () {
                 assert.equal(new Date(posts[1].published_at).getTime(), timestamp);
 
                 done();
-            }).then(null, done);
+            }).catch(function (error) {
+                done(new Error(error));
+            });
         });
 
         it("doesn't import invalid post data from 002", function (done) {
@@ -433,7 +445,9 @@ describe("Import", function () {
             }).then(function () {
                 (1).should.eql(0, 'Data import should not resolve promise.');
             }, function (error) {
-                error.should.eql('Error importing data: Value in [posts.title] exceeds maximum length of 150 characters.');
+
+                error[0].message.should.eql('Value in [posts.title] exceeds maximum length of 150 characters.');
+                error[0].type.should.eql('ValidationError');
 
                 when.all([
                     knex("users").select(),
@@ -457,7 +471,7 @@ describe("Import", function () {
 
                     // test settings
                     settings.length.should.be.above(0, 'Wrong number of settings');
-                    _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("002", 'Wrong database version');
+                    _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("003", 'Wrong database version');
 
                     // test tags
                     tags.length.should.equal(exportData.data.tags.length, 'no new tags');
@@ -465,7 +479,7 @@ describe("Import", function () {
                     done();
                 });
 
-            }).then(null, done);
+            }).catch(done);
         });
 
         it("doesn't import invalid settings data from 002", function (done) {
@@ -479,7 +493,9 @@ describe("Import", function () {
             }).then(function () {
                 (1).should.eql(0, 'Data import should not resolve promise.');
             }, function (error) {
-                error.should.eql('Error importing data: Value in [settings.key] cannot be blank.');
+
+                error[0].message.should.eql('Setting key cannot be empty.');
+                error[0].type.should.eql('ValidationError');
 
                 when.all([
                     knex("users").select(),
@@ -503,7 +519,7 @@ describe("Import", function () {
 
                     // test settings
                     settings.length.should.be.above(0, 'Wrong number of settings');
-                    _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("002", 'Wrong database version');
+                    _.findWhere(settings, {key: "databaseVersion"}).value.should.equal("003", 'Wrong database version');
 
                     // test tags
                     tags.length.should.equal(exportData.data.tags.length, 'no new tags');
@@ -511,7 +527,50 @@ describe("Import", function () {
                     done();
                 });
 
-            }).then(null, done);
+            }).catch(done);
+        });
+    });
+
+    describe("003", function () {
+        should.exist(Importer003);
+
+        beforeEach(function (done) {
+            // migrate to current version
+            migration.migrateUpFreshDb().then(function () {
+                return testUtils.insertDefaultUser();
+            }).then(function () {
+                done();
+            }).catch(done);
+        });
+
+        it("safely imports data from 003", function (done) {
+            var exportData;
+
+            testUtils.loadExportFixture('export-003').then(function (exported) {
+                exportData = exported;
+                return importer("003", exportData);
+            }).then(function () {
+                // Grab the data from tables
+                return when.all([
+                    knex("apps").select(),
+                    knex("app_settings").select()
+                ]);
+            }).then(function (importedData) {
+                should.exist(importedData);
+
+                importedData.length.should.equal(2, 'Did not get data successfully');
+
+                var apps = importedData[0],
+                    app_settings = importedData[1];
+
+                // test apps
+                apps.length.should.equal(exportData.data.apps.length, 'imported apps');
+
+                // test app settings
+                // app_settings.length.should.equal(exportData.data.app_settings.length, 'imported app settings');
+
+                done();
+            }).catch(done);
         });
     });
 });

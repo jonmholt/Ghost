@@ -3,9 +3,15 @@ var admin       = require('../controllers/admin'),
     middleware  = require('../middleware').middleware,
 
     ONE_HOUR_S  = 60 * 60,
-    ONE_YEAR_S  = 365 * 24 * ONE_HOUR_S;
+    ONE_YEAR_S  = 365 * 24 * ONE_HOUR_S,
 
-module.exports = function (server) {
+    adminRoutes;
+
+adminRoutes = function (server) {
+    // Have ember route look for hits first
+    // to prevent conflicts with pre-existing routes
+    server.get('/ghost/ember/*', admin.index);
+
     var subdir = config().paths.subdir;
     // ### Admin routes
     server.get('/logout/', function redirect(req, res) {
@@ -30,6 +36,7 @@ module.exports = function (server) {
     });
 
     server.get('/ghost/signout/', admin.signout);
+    server.post('/ghost/signout/', admin.doSignout);
     server.get('/ghost/signin/', middleware.redirectToSignup, middleware.redirectToDashboard, admin.signin);
     server.post('/ghost/signin/', admin.doSignin);
     server.get('/ghost/signup/', middleware.redirectToDashboard, admin.signup);
@@ -40,7 +47,8 @@ module.exports = function (server) {
     server.post('/ghost/reset/:token', admin.doReset);
     server.post('/ghost/changepw/', admin.doChangePassword);
 
-    server.get('/ghost/editor(/:id)/', admin.editor);
+    server.get('/ghost/editor/:id/:action', admin.editor);
+    server.get('/ghost/editor/:id/', admin.editor);
     server.get('/ghost/editor/', admin.editor);
     server.get('/ghost/content/', admin.content);
     server.get('/ghost/settings*', admin.settings);
@@ -59,5 +67,7 @@ module.exports = function (server) {
         /*jslint unparam:true*/
         res.redirect(subdir + '/ghost/');
     });
-    server.get('/ghost/', admin.index);
+    server.get('/ghost/', admin.indexold);
 };
+
+module.exports = adminRoutes;

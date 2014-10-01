@@ -6,6 +6,8 @@ var testUtils      = require('../utils'),
     _              = require('lodash'),
     path           = require('path'),
     rewire         = require('rewire'),
+    moment         = require('moment'),
+    Polyglot       = require('node-polyglot'),
     api            = require('../../server/api'),
     hbs            = require('express-hbs'),
     packageInfo    = require('../../../package'),
@@ -32,7 +34,9 @@ describe('Core Helpers', function () {
         helpers = rewire('../../server/helpers');
         sandbox = sinon.sandbox.create();
         apiStub = sandbox.stub(api.settings, 'read', function (arg) {
-            return when({value: 'casper'});
+            return when({
+                settings: [{value: 'casper'}]
+            });
         });
 
         config = helpers.__get__('config');
@@ -290,7 +294,7 @@ describe('Core Helpers', function () {
                 rendered.string.should.equal('home-template');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('can render class string for context', function (done) {
@@ -316,7 +320,7 @@ describe('Core Helpers', function () {
                 rendered[4].string.should.equal('archive-template tag-template tag-foo');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('can render class for static page', function (done) {
@@ -330,7 +334,7 @@ describe('Core Helpers', function () {
                 rendered.string.should.equal('home-template page');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('can render class for static page with custom template', function (done) {
@@ -346,7 +350,7 @@ describe('Core Helpers', function () {
                 rendered.string.should.equal('post-template page page-template-about');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
     });
 
@@ -360,7 +364,7 @@ describe('Core Helpers', function () {
                 should.exist(rendered);
                 rendered.string.should.equal('post');
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('can render featured class', function (done) {
@@ -371,7 +375,7 @@ describe('Core Helpers', function () {
                 rendered.string.should.equal('post featured');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('can render page class', function (done) {
@@ -382,7 +386,7 @@ describe('Core Helpers', function () {
                 rendered.string.should.equal('post page');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
     });
 
@@ -407,7 +411,7 @@ describe('Core Helpers', function () {
                     '<link rel="canonical" href="http://testurl.com/" />');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('returns meta tag string even if version is invalid', function (done) {
@@ -419,7 +423,7 @@ describe('Core Helpers', function () {
                     '<link rel="canonical" href="http://testurl.com/" />');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('returns correct rss url with subdirectory', function (done) {
@@ -431,7 +435,7 @@ describe('Core Helpers', function () {
                     '<link rel="canonical" href="http://testurl.com/blog/" />');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('returns canonical URL', function (done) {
@@ -443,7 +447,7 @@ describe('Core Helpers', function () {
                     '<link rel="canonical" href="http://testurl.com/about/" />');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
     });
 
@@ -452,8 +456,7 @@ describe('Core Helpers', function () {
             should.exist(handlebars.helpers.ghost_foot);
         });
 
-        it('returns meta tag string', function (done) {
-
+        it('outputs correct jquery for development mode', function (done) {
             helpers.assetHash = 'abc';
 
             helpers.ghost_foot.call().then(function (rendered) {
@@ -461,7 +464,19 @@ describe('Core Helpers', function () {
                 rendered.string.should.match(/<script src=".*\/public\/jquery.js\?v=abc"><\/script>/);
 
                 done();
-            }).then(null, done);
+            }).catch(done);
+        });
+
+        it('outputs correct jquery for production mode', function (done) {
+            helpers.assetHash = 'abc';
+            helpers.__set__('isProduction', true);
+
+            helpers.ghost_foot.call().then(function (rendered) {
+                should.exist(rendered);
+                rendered.string.should.match(/<script src=".*\/public\/jquery.min.js\?v=abc"><\/script>/);
+
+                done();
+            }).catch(done);
         });
     });
 
@@ -524,47 +539,65 @@ describe('Core Helpers', function () {
     });
 
     describe('url Helper', function () {
+
+        beforeEach(function () {
+            apiStub.restore();
+            apiStub = sandbox.stub(api.settings, 'read', function () {
+                return when({ settings: [{ value: '/:slug/' }] });
+            });
+        });
+
         it('has loaded url helper', function () {
             should.exist(handlebars.helpers.url);
         });
 
-        it('should return the slug with a prefix slash if the context is a post', function () {
+        it('should return the slug with a prefix slash if the context is a post', function (done) {
             helpers.url.call({html: 'content', markdown: "ff", title: "title", slug: "slug", created_at: new Date(0)}).then(function (rendered) {
                 should.exist(rendered);
                 rendered.should.equal('/slug/');
-            });
+                done();
+            }).catch(done);
         });
 
-        it('should output an absolute URL if the option is present', function () {
+        it('should output an absolute URL if the option is present', function (done) {
+            configUpdate({ url: 'http://testurl.com/' });
+
             helpers.url.call(
                 {html: 'content', markdown: "ff", title: "title", slug: "slug", created_at: new Date(0)},
                 {hash: { absolute: 'true'}}
             ).then(function (rendered) {
                 should.exist(rendered);
                 rendered.should.equal('http://testurl.com/slug/');
-            });
+                done();
+            }).catch(done);
         });
 
-        it('should return the slug with a prefixed /tag/ if the context is a tag', function () {
+        it('should return the slug with a prefixed /tag/ if the context is a tag', function (done) {
             helpers.url.call({name: 'the tag', slug: "the-tag", description: null, parent_id: null}).then(function (rendered) {
                 should.exist(rendered);
                 rendered.should.equal('/tag/the-tag/');
-            });
+                done();
+            }).catch(done);
         });
 
-        it('should return empty string if not a post or tag', function () {
-            helpers.url.call({markdown: "ff", title: "title", slug: "slug"}).then(function (rendered) {
-                rendered.should.equal('');
-            });
-            helpers.url.call({html: 'content', title: "title", slug: "slug"}).then(function (rendered) {
-                rendered.should.equal('');
-            });
-            helpers.url.call({html: 'content', markdown: "ff", slug: "slug"}).then(function (rendered) {
-                rendered.should.equal('');
-            });
-            helpers.url.call({html: 'content', markdown: "ff", title: "title"}).then(function (rendered) {
-                rendered.should.equal('');
-            });
+        it('should return / if not a post or tag', function (done) {
+            helpers.url.call({markdown: 'ff', title: 'title', slug: 'slug'}).then(function (rendered) {
+                rendered.should.equal('/');
+            }).then(function () {
+                return helpers.url.call({html: 'content', title: 'title', slug: 'slug'}).then(function (rendered) {
+                    rendered.should.equal('/');
+                });
+            }).then(function () {
+                return helpers.url.call({html: 'content', markdown: 'ff', slug: 'slug'}).then(function (rendered) {
+                    rendered.should.equal('/');
+                });
+            }).then(function () {
+                helpers.url.call({html: 'content', markdown: 'ff', title: 'title'}).then(function (rendered) {
+                    rendered.should.equal('/');
+
+                    done();
+                });
+            }).catch(done);
         });
     });
     
@@ -670,8 +703,19 @@ describe('Core Helpers', function () {
             should.exist(handlebars.helpers.pagination);
         });
 
+        it('should throw if pagination data is incorrect', function () {
+            var runHelper = function (data) {
+                return function () {
+                    helpers.pagination.call(data);
+                }
+            };
+
+            runHelper('not an object').should.throwError('pagination data is not an object or is a function');
+            runHelper(function () {}).should.throwError('pagination data is not an object or is a function');
+        });
+
         it('can render single page with no pagination necessary', function () {
-            var rendered = helpers.pagination.call({pagination: {page: 1, prev: undefined, next: undefined, limit: 15, total: 8, pages: 1}});
+            var rendered = helpers.pagination.call({pagination: {page: 1, prev: null, next: null, limit: 15, total: 8, pages: 1}, tag: {slug: 'slug'}});
             should.exist(rendered);
             // strip out carriage returns and compare.
             rendered.string.should.match(paginationRegex);
@@ -682,7 +726,7 @@ describe('Core Helpers', function () {
         });
 
         it('can render first page of many with older posts link', function () {
-            var rendered = helpers.pagination.call({pagination: {page: 1, prev: undefined, next: 2, limit: 15, total: 8, pages: 3}});
+            var rendered = helpers.pagination.call({pagination: {page: 1, prev: null, next: 2, limit: 15, total: 8, pages: 3}});
             should.exist(rendered);
 
             rendered.string.should.match(paginationRegex);
@@ -704,7 +748,7 @@ describe('Core Helpers', function () {
         });
 
         it('can render last page of many with newer posts link', function () {
-            var rendered = helpers.pagination.call({pagination: {page: 3, prev: 2, next: undefined, limit: 15, total: 8, pages: 3}});
+            var rendered = helpers.pagination.call({pagination: {page: 3, prev: 2, next: null, limit: 15, total: 8, pages: 3}});
             should.exist(rendered);
 
             rendered.string.should.match(paginationRegex);
@@ -722,7 +766,7 @@ describe('Core Helpers', function () {
                 };
             };
 
-            runErrorTest({pagination: {page: 3, prev: true, next: undefined, limit: 15, total: 8, pages: 3}})
+            runErrorTest({pagination: {page: 3, prev: true, next: null, limit: 15, total: 8, pages: 3}})
                 .should.throwError('Invalid value, Next/Prev must be a number');
             runErrorTest({pagination: {page: 3, prev: 2, next: true, limit: 15, total: 8, pages: 3}})
                 .should.throwError('Invalid value, Next/Prev must be a number');
@@ -736,13 +780,13 @@ describe('Core Helpers', function () {
             runErrorTest({pagination: {page: 3, limit: 15, total: 8}})
                 .should.throwError('All values must be defined for page, pages, limit and total');
 
-            runErrorTest({pagination: {page: null, limit: 15, total: 8, pages: 3}})
+            runErrorTest({pagination: {page: null, prev: null, next: null, limit: 15, total: 8, pages: 3}})
                 .should.throwError('Invalid value, check page, pages, limit and total are numbers');
-            runErrorTest({pagination: {page: 1, limit: null, total: 8, pages: 3}})
+            runErrorTest({pagination: {page: 1, prev: null, next: null, limit: null, total: 8, pages: 3}})
                 .should.throwError('Invalid value, check page, pages, limit and total are numbers');
-            runErrorTest({pagination: {page: 1, limit: 15, total: null, pages: 3}})
+            runErrorTest({pagination: {page: 1, prev: null, next: null, limit: 15, total: null, pages: 3}})
                 .should.throwError('Invalid value, check page, pages, limit and total are numbers');
-            runErrorTest({pagination: {page: 1, limit: 15, total: 8, pages: null}})
+            runErrorTest({pagination: {page: 1, prev: null, next: null, limit: 15, total: 8, pages: null}})
                 .should.throwError('Invalid value, check page, pages, limit and total are numbers');
         });
     });
@@ -856,30 +900,40 @@ describe('Core Helpers', function () {
         it('can return blog title', function (done) {
             helpers.meta_title.call({relativeUrl: '/'}).then(function (rendered) {
                 should.exist(rendered);
-                rendered.string.should.equal('Ghost');
+                String(rendered).should.equal('Ghost');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('can return title of a post', function (done) {
             var post = {relativeUrl: '/nice-post', post: {title: 'Post Title'}};
             helpers.meta_title.call(post).then(function (rendered) {
                 should.exist(rendered);
-                rendered.string.should.equal('Post Title');
+                String(rendered).should.equal('Post Title');
 
                 done();
             }).then(null, done);
+        });
+	
+	it('can return escaped title of a post', function (done) {
+            var post = {relativeUrl: '/nice-escaped-post', post: {title: 'Post Title "</>'}};
+            helpers.meta_title.call(post).then(function (rendered) {
+                should.exist(rendered);
+                String(rendered).should.equal('Post Title "</>');
+
+                done();
+            }).catch(done);
         });
 
         it('can return tag name', function (done) {
             var post = {relativeUrl: '/tag/foo', tag: {name: 'foo'}};
             helpers.meta_title.call(post).then(function (rendered) {
                 should.exist(rendered);
-                rendered.string.should.equal('foo - Ghost');
+                String(rendered).should.equal('foo - Ghost');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
     });
 
@@ -892,20 +946,20 @@ describe('Core Helpers', function () {
         it('can return blog description', function (done) {
             helpers.meta_description.call({relativeUrl: '/'}).then(function (rendered) {
                 should.exist(rendered);
-                rendered.string.should.equal('Just a blogging platform.');
+                String(rendered).should.equal('Just a blogging platform.');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
-
+	
         it('can return empty description on post', function (done) {
             var post = {relativeUrl: '/nice-post', post: {title: 'Post Title'}};
             helpers.meta_description.call(post).then(function (rendered) {
                 should.exist(rendered);
-                rendered.string.should.equal('');
+                String(rendered).should.equal('');
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
     });
@@ -1015,6 +1069,270 @@ describe('Core Helpers', function () {
             String(rendered).should.equal('/blog/assets/js/asset.js?v=abc');
         });
 
+    });
+
+    describe('date helper', function () {
+
+        it('is loaded', function () {
+            should.exist(handlebars.helpers.date);
+        });
+
+        // TODO: When timezone support is added these tests should be updated
+        //       to test the output of the helper against static strings instead
+        //       of calling moment().  Without timezone support the output of this
+        //       helper may differ depending on what timezone the tests are run in.
+        
+        it('creates properly formatted date strings', function () {
+            var testDates = [
+                '2013-12-31T11:28:58.593Z',
+                '2014-01-01T01:28:58.593Z',
+                '2014-02-20T01:28:58.593Z',
+                '2014-03-01T01:28:58.593Z'
+            ],
+            format = 'MMM Do, YYYY',
+            context = {
+                hash: {
+                    format: format
+                }
+            };
+
+            testDates.forEach(function (d) {
+                var rendered = helpers.date.call({ published_at: d }, context);
+
+                should.exist(rendered);
+                rendered.should.equal(moment(d).format(format));
+            });
+        });
+
+        it('creates properly formatted time ago date strings', function () {
+            var testDates = [
+                '2013-12-31T23:58:58.593Z',
+                '2014-01-01T00:28:58.593Z',
+                '2014-11-20T01:28:58.593Z',
+                '2014-03-01T01:28:58.593Z'
+            ],
+            context = {
+                hash: {
+                    timeago: true
+                }
+            };
+
+            testDates.forEach(function (d) {
+                var rendered = helpers.date.call({ published_at: d }, context);
+
+                should.exist(rendered);
+                rendered.should.equal(moment(d).fromNow());
+            });
+        });
+    });
+
+    describe('e helper', function () {
+
+        it('is loaded', function () {
+            should.exist(handlebars.helpers.e);
+        });
+
+        it('should return the correct default string', function (done) {
+            apiStub.restore();
+            apiStub = sandbox.stub(api.settings, 'read', function () {
+                return when({ settings: ['en_US'] });
+            });
+
+            helpers.e('testKey', 'default', { hash: {} }).then(function (result) {
+                result.should.equal('default');
+                done();
+            }).catch(done);
+        });
+
+        it('should return the correct string', function (done) {
+            apiStub.restore();
+            apiStub = sandbox.stub(api.settings, 'read', function () {
+                return when({ settings: ['fr'] });
+            });
+
+            var polyglot = new Polyglot();
+
+            polyglot.extend({ testKey: 'test value' });
+
+            helpers.__set__('polyglot', polyglot);
+
+            helpers.e('testKey', 'default', { hash: {} }).then(function (result) {
+                result.should.equal('test value');
+                done();
+            }).catch(done);
+        });
+    });
+
+    describe('foreach helper', function () {
+
+        // passed into the foreach helper.  takes the input string along with the metadata about
+        // the current row and builds a csv output string that can be used to check the results.
+        function fn(input, data) {
+            data = data.data;
+
+            // if there was no private data passed into the helper, no metadata
+            // was created, so just return the input
+            if (!data) {
+                return input + '\n';
+            }
+
+            return input + ',' + data.first + ',' + data.rowEnd + ',' + data.rowStart + ',' +
+                data.last + ',' + data.even + ',' + data.odd + '\n';
+        }
+
+        function inverse(input) {
+            return input;
+        }
+
+        it('is loaded', function () {
+            should.exist(handlebars.helpers.foreach);
+        });
+
+        it('should return the correct result when no private data is supplied', function () {
+            var options = {},
+                context = [],
+                _this = {},
+                rendered;
+
+            options.fn = fn;
+            options.inverse = inverse;
+            options.hash = {
+                columns: 0
+            };
+
+            // test with context as an array
+
+            context = 'hello world this is ghost'.split(' ');
+
+            rendered = helpers.foreach.call(_this, context, options);
+            rendered.should.equal('hello\n\world\nthis\nis\nghost\n');
+
+            // test with context as an object
+
+            context = {
+                one: 'hello',
+                two: 'world',
+                three: 'this',
+                four: 'is',
+                five: 'ghost'
+            };
+
+            rendered = helpers.foreach.call(_this, context, options);
+            rendered.should.equal('hello\n\world\nthis\nis\nghost\n');
+        });
+
+        it('should return the correct result when private data is supplied', function () {
+            var options = {},
+                context = [],
+                _this = {},
+                rendered,
+                result;
+
+            options.fn = fn;
+            options.inverse = inverse;
+
+            options.hash = {
+                columns: 0
+            };
+
+            options.data = {};
+
+            context = 'hello world this is ghost'.split(' ');
+
+            rendered = helpers.foreach.call(_this, context, options);
+
+            result = rendered.split('\n');
+            result[0].should.equal('hello,true,false,false,false,false,true');
+            result[1].should.equal('world,false,false,false,false,true,false');
+            result[2].should.equal('this,false,false,false,false,false,true');
+            result[3].should.equal('is,false,false,false,false,true,false');
+            result[4].should.equal('ghost,false,false,false,true,false,true');
+        });
+
+        it('should return the correct result when private data is supplied and there are multiple columns', function () {
+            var options = {},
+                context = [],
+                _this = {},
+                rendered,
+                result;
+
+            options.fn = fn;
+            options.inverse = inverse;
+
+            options.hash = {
+                columns: 2
+            };
+
+            options.data = {};
+
+            // test with context as an array
+
+            context = 'hello world this is ghost'.split(' ');
+
+            rendered = helpers.foreach.call(_this, context, options);
+
+            result = rendered.split('\n');
+            result[0].should.equal('hello,true,false,true,false,false,true');
+            result[1].should.equal('world,false,true,false,false,true,false');
+            result[2].should.equal('this,false,false,true,false,false,true');
+            result[3].should.equal('is,false,true,false,false,true,false');
+            result[4].should.equal('ghost,false,false,true,true,false,true');
+
+            // test with context as an object
+
+            context = {
+                one: 'hello',
+                two: 'world',
+                three: 'this',
+                four: 'is',
+                five: 'ghost'
+            };
+
+            rendered = helpers.foreach.call(_this, context, options);
+
+            result = rendered.split('\n');
+            result[0].should.equal('hello,true,false,true,false,false,true');
+            result[1].should.equal('world,false,true,false,false,true,false');
+            result[2].should.equal('this,false,false,true,false,false,true');
+            result[3].should.equal('is,false,true,false,false,true,false');
+            result[4].should.equal('ghost,false,false,true,true,false,true');
+        });
+
+        it('should return the correct inverse result if no context is provided', function () {
+            var options = {},
+                context = [],
+                _this = 'the inverse data',
+                rendered;
+
+            options.fn = function () {};
+            options.inverse = inverse;
+            options.hash = {
+                columns: 0
+            };
+            options.data = {};
+
+            rendered = helpers.foreach.call(_this, context, options);
+            rendered.should.equal(_this);
+        });
+    });
+
+    describe('helperMissing', function () {
+
+        it('should not throw an error', function () {
+            var helperMissing = helpers.__get__('coreHelpers.helperMissing');
+
+            should.exist(helperMissing);
+
+            function runHelper() {
+                var args = arguments;
+                return function () {
+                    helperMissing.apply(null, args);
+                }
+            }
+
+            runHelper('test helper').should.not.throwError();
+            runHelper('test helper', 'second argument').should.not.throwError();
+        });
     });
 
     // ## Admin only helpers
@@ -1175,7 +1493,9 @@ describe('Core Helpers', function () {
             apiStub = sandbox.stub(api.settings, 'read', function () {
                 var futureversion = packageInfo.version.split('.');
                 futureversion[futureversion.length - 1] = parseInt(futureversion[futureversion.length - 1], 10) + 1;
-                return when({value: futureversion.join('.')});
+                return when({
+                    settings: [{value: futureversion.join('.')}]
+                });
             });
 
             helpers.update_notification.call({currentUser: {name: 'bob'}}).then(function (rendered) {
@@ -1191,20 +1511,20 @@ describe('Core Helpers', function () {
                 rendered.should.equal(classOutput);
 
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('does NOT output a correctly formatted notification when db version equals package version', function (done) {
             apiStub.restore();
             apiStub = sandbox.stub(api.settings, 'read', function () {
-                return when({value: packageInfo.version});
+                return when({ settings: [{value: packageInfo.version}] });
             });
 
             helpers.update_notification.call({currentUser: {name: 'bob'}}).then(function (rendered) {
                 should.exist(rendered);
                 rendered.should.equal('');
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('does NOT output a notification if updateCheck is false', function (done) {
@@ -1212,14 +1532,14 @@ describe('Core Helpers', function () {
 
             apiStub.restore();
             apiStub = sandbox.stub(api.settings, 'read', function () {
-                return when({value: 'true'});
+                return when({ settings: [{value: 'true'}] });
             });
 
             helpers.update_notification.call({currentUser: {name: 'bob'}}).then(function (rendered) {
                 should.exist(rendered);
                 rendered.should.equal('');
                 done();
-            }).then(null, done);
+            }).catch(done);
         });
 
         it('does NOT output a notification if the user is not logged in', function (done) {
@@ -1227,14 +1547,80 @@ describe('Core Helpers', function () {
             apiStub = sandbox.stub(api.settings, 'read', function () {
                 var futureversion = packageInfo.version.split('.');
                 futureversion[futureversion.length-1] = parseInt(futureversion[futureversion.length-1], 10) + 1;
-                return when({value: futureversion.join('.')});
+                return when({ settings: [{value: futureversion.join('.')}] });
             });
 
             helpers.update_notification.call().then(function (rendered) {
                 should.exist(rendered);
                 rendered.should.equal('');
                 done();
-            }).then(null, done);
+            }).catch(done);
+        });
+    });
+
+    describe('file storage helper', function () {
+
+        it('is loaded', function () {
+            should.exist(helpers.file_storage);
+        });
+
+        it('should return the string true when config() has no fileStorage property', function () {
+            var fileStorage = helpers.file_storage();
+
+            should.exist(fileStorage);
+            fileStorage.should.equal('true');
+        });
+
+        it('should return the config().fileStorage value when it exists', function () {
+            var setting = 'file storage value',
+                cfg = helpers.__get__('config'),
+                fileStorage;
+
+            configStub = sandbox.stub().returns({
+                fileStorage: setting
+            });
+
+            _.extend(cfg, configStub);
+            
+            helpers.__set__('config', cfg);
+
+            fileStorage = helpers.file_storage();
+
+            should.exist(fileStorage);
+            fileStorage.should.equal(setting);
+        });
+    });
+
+    describe('apps helper', function () {
+
+        it('is loaded', function () {
+            should.exist(helpers.apps);
+        });
+
+        it('should return the string false when config() has no apps property', function () {
+            var apps = helpers.apps();
+
+            should.exist(apps);
+            apps.should.equal('false');
+        });
+
+        it('should return the config().apps value when it exists', function () {
+            var setting = 'app value',
+                cfg = helpers.__get__('config'),
+                apps;
+
+            configStub = sandbox.stub().returns({
+                apps: setting
+            });
+
+            _.extend(cfg, configStub);
+            
+            helpers.__set__('config', cfg);
+
+            apps = helpers.apps();
+
+            should.exist(apps);
+            apps.should.equal(setting);
         });
     });
 });
