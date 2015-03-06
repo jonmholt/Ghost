@@ -1,76 +1,63 @@
 /*globals describe, before, beforeEach, afterEach, it */
+/*jshint expr:true*/
 var _             = require('lodash'),
     testUtils     = require('../../utils'),
     rewire        = require('rewire'),
     should        = require('should'),
     sinon         = require('sinon'),
-    when          = require('when'),
+    Promise       = require('bluebird'),
 
     // Stuff we are testing
-    permissions   = require('../../../server/permissions'),
-    SettingsAPI      = require('../../../server/api/settings'),
-    ThemeAPI      = rewire('../../../server/api/themes');
+    SettingsAPI   = require('../../../server/api/settings'),
+    ThemeAPI      = rewire('../../../server/api/themes'),
+
+    sandbox     = sinon.sandbox.create();
 
 describe('Themes API', function () {
-    var configStub,
-        sandbox,
-        settingsReadStub;
+    var config,
+        configStub;
 
-    before(function (done) {
-        testUtils.clearData().then(function () {
-            done();
-        }).catch(done);
+    // Keep the DB clean
+    before(testUtils.teardown);
+    afterEach(testUtils.teardown);
+    afterEach(function () {
+        sandbox.restore();
     });
 
-    beforeEach(function (done) {
-        testUtils.initData().then(function () {
-            return testUtils.insertDefaultFixtures();
-        }).then(function () {
-            return SettingsAPI.updateSettingsCache();
-        }).then(function () {
+    beforeEach(testUtils.setup('users:roles', 'perms:theme', 'perms:init'));
 
-            return permissions.init();
-        }).then(function () {
-            sandbox = sinon.sandbox.create();
+    beforeEach(function () {
+        // Override settings.read for activeTheme
+        sandbox.stub(SettingsAPI, 'read', function () {
+            return Promise.resolve({settings: [{value: 'casper'}]});
+        });
 
-            // Override settings.read for activeTheme
-            settingsReadStub = sandbox.stub(SettingsAPI, 'read', function () {
-                return when({ settings: [{value: 'casper'}] });
-            });
+        sandbox.stub(SettingsAPI, 'edit', function () {
+            return Promise.resolve({settings: [{value: 'rasper'}]});
+        });
 
-            configStub = sandbox.stub().returns({
-                'paths': {
-                    'subdir': '',
-                    'availableThemes': {
-                        'casper': {
-                            'package.json': { name: 'Casper', version: '0.9.3' }
-                        },
-                        'rasper': {
-                            'package.json': { name: 'Rasper', version: '0.9.6' }
-                        }
+        configStub = {
+            paths: {
+                subdir: '',
+                availableThemes: {
+                    casper: {
+                        'package.json': {name: 'Casper', version: '0.9.3'}
+                    },
+                    rasper: {
+                        'package.json': {name: 'Rasper', version: '0.9.6'}
                     }
                 }
-            });
-
-            done();
-        }).catch(done);
-    });
-
-    afterEach(function (done) {
-        testUtils.clearData().then(function () {
-            sandbox.restore();
-            done();
-        }).catch(done);
-    });
-
-    it('can browse', function (done) {
-        var config;
+            }
+        };
 
         config = ThemeAPI.__get__('config');
-        _.extend(configStub, config);
-        ThemeAPI.__set__('config', configStub);
+        _.extend(config, configStub);
+    });
 
-        ThemeAPI.browse({context: {user: 1}}).then(function (result) {
+    should.exist(ThemeAPI);
+
+    it('can browse', function (done) {
+        ThemeAPI.browse(testUtils.context.owner).then(function (result) {
             should.exist(result);
             result.themes.length.should.be.above(0);
             testUtils.API.checkResponse(result.themes[0], 'theme');
@@ -81,13 +68,7 @@ describe('Themes API', function () {
     });
 
     it('can edit', function (done) {
-        var config;
-
-        config = ThemeAPI.__get__('config');
-        _.extend(configStub, config);
-        ThemeAPI.__set__('config', configStub);
-
-        ThemeAPI.edit({themes: [{uuid: 'rasper', active: true }]}, {context: {user: 1}}).then(function (result) {
+        ThemeAPI.edit({themes: [{uuid: 'rasper', active: true}]}, testUtils.context.owner).then(function (result) {
             should.exist(result);
             should.exist(result.themes);
             result.themes.length.should.be.above(0);
@@ -97,5 +78,5 @@ describe('Themes API', function () {
         }).catch(function (error) {
             done(new Error(JSON.stringify(error)));
         }).catch(done);
-    })
+    });
 });

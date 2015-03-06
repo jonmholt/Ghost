@@ -1,18 +1,17 @@
 /*global Ember */
 
-var trailingHistory = Ember.HistoryLocation.extend({
-    setURL: function (path) {
-        var state = this.getState();
-        path = this.formatURL(path);
-        path = path.replace(/\/?$/, '/');
+var trailingHistory,
+    registerTrailingLocationHistory;
 
-        if (state && state.path !== path) {
-            this.pushState(path);
-        }
+trailingHistory = Ember.HistoryLocation.extend({
+    formatURL: function () {
+        // jscs: disable
+        return this._super.apply(this, arguments).replace(/\/?$/, '/');
+        // jscs: enable
     }
 });
 
-var registerTrailingLocationHistory = {
+registerTrailingLocationHistory = {
     name: 'registerTrailingLocationHistory',
 
     initialize: function (container, application) {

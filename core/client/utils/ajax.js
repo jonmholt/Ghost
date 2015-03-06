@@ -1,12 +1,12 @@
 /* global ic */
 
-var ajax = window.ajax = function () {
+var ajax = function () {
     return ic.ajax.request.apply(null, arguments);
 };
 
 // Used in API request fail handlers to parse a standard api error
 // response json for the message to display
-var getRequestErrorMessage = function (request) {
+function getRequestErrorMessage(request, performConcat) {
     var message,
         msgDetail;
 
@@ -23,10 +23,9 @@ var getRequestErrorMessage = function (request) {
         try {
             // Try to parse out the error, or default to 'Unknown'
             if (request.responseJSON.errors && Ember.isArray(request.responseJSON.errors)) {
-
                 message = request.responseJSON.errors.map(function (errorItem) {
                     return errorItem.message;
-                }).join('; ');
+                });
             } else {
                 message =  request.responseJSON.error || 'Unknown Error';
             }
@@ -36,8 +35,17 @@ var getRequestErrorMessage = function (request) {
         }
     }
 
-    return message;
-};
+    if (performConcat && Ember.isArray(message)) {
+        message = message.join('<br />');
+    }
 
-export { getRequestErrorMessage, ajax };
+    // return an array of errors by default
+    if (!performConcat && typeof message === 'string') {
+        message = [message];
+    }
+
+    return message;
+}
+
+export {getRequestErrorMessage, ajax};
 export default ajax;

@@ -1,6 +1,7 @@
-var User           = require('./user').User,
-    Permission     = require('./permission').Permission,
+var _              = require('lodash'),
+    errors         = require('../errors'),
     ghostBookshelf = require('./base'),
+    Promise        = require('bluebird'),
 
     Role,
     Roles;
@@ -10,11 +11,11 @@ Role = ghostBookshelf.Model.extend({
     tableName: 'roles',
 
     users: function () {
-        return this.belongsToMany(User);
+        return this.belongsToMany('User');
     },
 
     permissions: function () {
-        return this.belongsToMany(Permission);
+        return this.belongsToMany('Permission');
     }
 }, {
     /**
@@ -28,8 +29,7 @@ Role = ghostBookshelf.Model.extend({
             // whitelists for the `options` hash argument on methods, by method name.
             // these are the only options that can be passed to Bookshelf / Knex.
             validOptions = {
-                findOne: ['withRelated'],
-                add: ['user']
+                findOne: ['withRelated']
             };
 
         if (validOptions[methodName]) {
@@ -37,6 +37,45 @@ Role = ghostBookshelf.Model.extend({
         }
 
         return options;
+    },
+
+    permissible: function (roleModelOrId, action, context, loadedPermissions, hasUserPermission, hasAppPermission) {
+        var self = this,
+            checkAgainst = [],
+            origArgs;
+
+        // If we passed in an id instead of a model, get the model
+        // then check the permissions
+        if (_.isNumber(roleModelOrId) || _.isString(roleModelOrId)) {
+            // Grab the original args without the first one
+            origArgs = _.toArray(arguments).slice(1);
+            // Get the actual post model
+            return this.findOne({id: roleModelOrId, status: 'all'}).then(function (foundRoleModel) {
+                // Build up the original args but substitute with actual model
+                var newArgs = [foundRoleModel].concat(origArgs);
+
+                return self.permissible.apply(self, newArgs);
+            }, errors.logAndThrowError);
+        }
+
+        if (action === 'assign' && loadedPermissions.user) {
+            if (_.any(loadedPermissions.user.roles, {name: 'Owner'})) {
+                checkAgainst = ['Owner', 'Administrator', 'Editor', 'Author'];
+            } else if (_.any(loadedPermissions.user.roles, {name: 'Administrator'})) {
+                checkAgainst = ['Administrator', 'Editor', 'Author'];
+            } else if (_.any(loadedPermissions.user.roles, {name: 'Editor'})) {
+                checkAgainst = ['Author'];
+            }
+
+            // Role in the list of permissible roles
+            hasUserPermission = roleModelOrId && _.contains(checkAgainst, roleModelOrId.get('name'));
+        }
+
+        if (hasUserPermission && hasAppPermission) {
+            return Promise.resolve();
+        }
+
+        return Promise.reject();
     }
 });
 
@@ -45,6 +84,6 @@ Roles = ghostBookshelf.Collection.extend({
 });
 
 module.exports = {
-    Role: Role,
-    Roles: Roles
+    Role: ghostBookshelf.model('Role', Role),
+    Roles: ghostBookshelf.collection('Roles', Roles)
 };

@@ -1,5 +1,11 @@
-export default Ember.Component.extend({
+var ActivatingListItem = Ember.Component.extend({
     tagName: 'li',
     classNameBindings: ['active'],
-    active: false
+    active: false,
+
+    unfocusLink: function () {
+        this.$('a').blur();
+    }.on('click')
 });
+
+export default ActivatingListItem;

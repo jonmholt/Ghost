@@ -2,6 +2,8 @@
 
 var styleBody = Ember.Mixin.create({
     activate: function () {
+        this._super();
+
         var cssClasses = this.get('classNames');
 
         if (cssClasses) {
@@ -14,6 +16,8 @@ var styleBody = Ember.Mixin.create({
     },
 
     deactivate: function () {
+        this._super();
+
         var cssClasses = this.get('classNames');
 
         Ember.run.schedule('afterRender', null, function () {

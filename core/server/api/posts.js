@@ -1,6 +1,6 @@
 // # Posts API
 // RESTful API for the Post resource
-var when            = require('when'),
+var Promise         = require('bluebird'),
     _               = require('lodash'),
     dataProvider    = require('../models'),
     canThis         = require('../permissions').canThis,
@@ -8,13 +8,14 @@ var when            = require('when'),
     utils           = require('./utils'),
 
     docName         = 'posts',
-    allowedIncludes = ['created_by', 'updated_by', 'published_by', 'author', 'tags', 'fields'],
+    allowedIncludes = ['created_by', 'updated_by', 'published_by', 'author', 'tags', 'fields', 'next', 'previous'],
     posts;
 
 // ## Helpers
 function prepareInclude(include) {
     var index;
 
+    include = include || '';
     include = _.intersection(include.split(','), allowedIncludes);
     index = include.indexOf('author');
 
@@ -85,11 +86,10 @@ posts = {
 
         return dataProvider.Post.findOne(data, options).then(function (result) {
             if (result) {
-                return { posts: [ result.toJSON() ]};
+                return {posts: [result.toJSON()]};
             }
 
-            return when.reject(new errors.NotFoundError('Post not found.'));
-
+            return Promise.reject(new errors.NotFoundError('Post not found.'));
         });
     },
 
@@ -104,7 +104,7 @@ posts = {
      */
     edit: function edit(object, options) {
         return canThis(options.context).edit.post(options.id).then(function () {
-            return utils.checkObject(object, docName).then(function (checkedPostData) {
+            return utils.checkObject(object, docName, options.id).then(function (checkedPostData) {
                 if (options.include) {
                     options.include = prepareInclude(options.include);
                 }
@@ -114,17 +114,18 @@ posts = {
                 if (result) {
                     var post = result.toJSON();
 
-                    // If previously was not published and now is, signal the change
+                    // If previously was not published and now is (or vice versa), signal the change
+                    post.statusChanged = false;
                     if (result.updated('status') !== result.get('status')) {
                         post.statusChanged = true;
                     }
-                    return { posts: [ post ]};
+                    return {posts: [post]};
                 }
 
-                return when.reject(new errors.NotFoundError('Post not found.'));
+                return Promise.reject(new errors.NotFoundError('Post not found.'));
             });
         }, function () {
-            return when.reject(new errors.NoPermissionError('You do not have permission to edit this post.'));
+            return Promise.reject(new errors.NoPermissionError('You do not have permission to edit posts.'));
         });
     },
 
@@ -140,7 +141,7 @@ posts = {
     add: function add(object, options) {
         options = options || {};
 
-        return canThis(options.context).create.post().then(function () {
+        return canThis(options.context).add.post().then(function () {
             return utils.checkObject(object, docName).then(function (checkedPostData) {
                 if (options.include) {
                     options.include = prepareInclude(options.include);
@@ -154,13 +155,12 @@ posts = {
                     // When creating a new post that is published right now, signal the change
                     post.statusChanged = true;
                 }
-                return { posts: [ post ]};
+                return {posts: [post]};
             });
         }, function () {
-            return when.reject(new errors.NoPermissionError('You do not have permission to add posts.'));
+            return Promise.reject(new errors.NoPermissionError('You do not have permission to add posts.'));
         });
     },
-
 
     /**
      * ### Destroy
@@ -171,7 +171,7 @@ posts = {
      * @return {Promise(Post)} Deleted Post
      */
     destroy: function destroy(options) {
-        return canThis(options.context).remove.post(options.id).then(function () {
+        return canThis(options.context).destroy.post(options.id).then(function () {
             var readOptions = _.extend({}, options, {status: 'all'});
             return posts.read(readOptions).then(function (result) {
                 return dataProvider.Post.destroy(options).then(function () {
@@ -187,7 +187,7 @@ posts = {
                 });
             });
         }, function () {
-            return when.reject(new errors.NoPermissionError('You do not have permission to remove posts.'));
+            return Promise.reject(new errors.NoPermissionError('You do not have permission to remove posts.'));
         });
     }
 

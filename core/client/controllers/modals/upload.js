@@ -1,12 +1,20 @@
 
 var UploadController = Ember.Controller.extend({
-    confirm: {
-        reject: {
-            func: function () { // The function called on rejection
-                return true;
-            },
-            buttonClass: true,
-            text: 'Cancel' // The reject button text
+    acceptEncoding: 'image/*',
+    actions: {
+        confirmAccept: function () {
+            var self = this;
+
+            this.get('model').save().then(function (model) {
+                self.notifications.showSuccess('Saved');
+                return model;
+            }).catch(function (err) {
+                self.notifications.showErrors(err);
+            });
+        },
+
+        confirmReject: function () {
+            return false;
         }
     }
 });

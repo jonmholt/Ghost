@@ -1,8 +1,13 @@
-var User = DS.Model.extend({
+import ValidationEngine from 'ghost/mixins/validation-engine';
+import NProgressSaveMixin from 'ghost/mixins/nprogress-save';
+import SelectiveSaveMixin from 'ghost/mixins/selective-save';
+
+var User = DS.Model.extend(NProgressSaveMixin, SelectiveSaveMixin, ValidationEngine, {
+    validationType: 'user',
+
     uuid: DS.attr('string'),
     name: DS.attr('string'),
     slug: DS.attr('string'),
-    password: DS.attr('string'),
     email: DS.attr('string'),
     image: DS.attr('string'),
     cover: DS.attr('string'),
@@ -11,114 +16,90 @@ var User = DS.Model.extend({
     location: DS.attr('string'),
     accessibility: DS.attr('string'),
     status: DS.attr('string'),
-    language: DS.attr('string'),
+    language: DS.attr('string', {defaultValue: 'en_US'}),
     meta_title: DS.attr('string'),
     meta_description: DS.attr('string'),
-    last_login: DS.attr('date'),
-    created_at: DS.attr('date'),
+    last_login: DS.attr('moment-date'),
+    created_at: DS.attr('moment-date'),
     created_by: DS.attr('number'),
-    updated_at: DS.attr('date'),
+    updated_at: DS.attr('moment-date'),
     updated_by: DS.attr('number'),
+    roles: DS.hasMany('role', {embedded: 'always'}),
 
-    isSignedIn: Ember.computed.bool('id'),
+    role: Ember.computed('roles', function (name, value) {
+        if (arguments.length > 1) {
+            // Only one role per user, so remove any old data.
+            this.get('roles').clear();
+            this.get('roles').pushObject(value);
 
-    validationErrors: function () {
-        var validationErrors = [];
-
-        if (!validator.isLength(this.get('name'), 0, 150)) {
-            validationErrors.push({message: 'Name is too long'});
+            return value;
         }
 
-        if (!validator.isLength(this.get('bio'), 0, 200)) {
-            validationErrors.push({message: 'Bio is too long'});
-        }
+        return this.get('roles.firstObject');
+    }),
 
-        if (!validator.isEmail(this.get('email'))) {
-            validationErrors.push({message: 'Please supply a valid email address'});
-        }
+    // TODO: Once client-side permissions are in place,
+    // remove the hard role check.
+    isAuthor: Ember.computed.equal('role.name', 'Author'),
+    isEditor: Ember.computed.equal('role.name', 'Editor'),
+    isAdmin: Ember.computed.equal('role.name', 'Administrator'),
+    isOwner: Ember.computed.equal('role.name', 'Owner'),
 
-        if (!validator.isLength(this.get('location'), 0, 150)) {
-            validationErrors.push({message: 'Location is too long'});
-        }
+    saveNewPassword: function () {
+        var url = this.get('ghostPaths.url').api('users', 'password');
 
-        if (this.get('website').length) {
-            if (!validator.isURL(this.get('website'), { protocols: ['http', 'https'], require_protocol: true }) ||
-                !validator.isLength(this.get('website'), 0, 2000)) {
-                validationErrors.push({message: 'Please use a valid url'});
-            }
-        }
-
-        return validationErrors;
-    }.property('name', 'bio', 'email', 'location', 'website'),
-
-    isValid: Ember.computed.empty('validationErrors.[]'),
-
-    saveNewPassword: function (password) {
-        var url = this.get('ghostPaths').adminUrl('changepw');
         return ic.ajax.request(url, {
-            type: 'POST',
-            data: password
+            type: 'PUT',
+            data: {
+                password: [{
+                    user_id: this.get('id'),
+                    oldPassword: this.get('password'),
+                    newPassword: this.get('newPassword'),
+                    ne2Password: this.get('ne2Password')
+                }]
+            }
         });
     },
 
-    passwordValidationErrors: function (password) {
+    resendInvite: function () {
+        var fullUserData = this.toJSON(),
+            userData = {
+                email: fullUserData.email,
+                roles: fullUserData.roles
+            };
+
+        return ic.ajax.request(this.get('ghostPaths.url').api('users'), {
+            type: 'POST',
+            data: JSON.stringify({users: [userData]}),
+            contentType: 'application/json'
+        });
+    },
+
+    passwordValidationErrors: Ember.computed('password', 'newPassword', 'ne2Password', function () {
         var validationErrors = [];
 
-        if (!validator.equals(password.newPassword, password.ne2Password)) {
-            validationErrors.push('Your new passwords do not match');
+        if (!validator.equals(this.get('newPassword'), this.get('ne2Password'))) {
+            validationErrors.push({message: 'Your new passwords do not match'});
         }
 
-        if (!validator.isLength(password.newPassword, 8)) {
-            validationErrors.push('Your password is not long enough. It must be at least 8 characters long.');
+        if (!validator.isLength(this.get('newPassword'), 8)) {
+            validationErrors.push({message: 'Your password is not long enough. It must be at least 8 characters long.'});
         }
 
         return validationErrors;
-    },
+    }),
 
-    fetchForgottenPasswordFor: function (email) {
-        var forgottenUrl = this.get('ghostPaths').apiUrl('forgotten');
+    isPasswordValid: Ember.computed.empty('passwordValidationErrors.[]'),
 
-        return new Ember.RSVP.Promise(function (resolve, reject) {
-            if (!validator.isEmail(email)) {
-                reject(new Error('Please enter a correct email address.'));
-            } else {
-                resolve(ic.ajax.request(forgottenUrl, {
-                    type: 'POST',
-                    headers: {
-                        // @TODO Find a more proper way to do this.
-                        'X-CSRF-Token': $('meta[name="csrf-param"]').attr('content')
-                    },
-                    data: {
-                        email: email
-                    }
-                }));
-            }
-        });
-    },
+    active: function () {
+        return ['active', 'warn-1', 'warn-2', 'warn-3', 'warn-4', 'locked'].indexOf(this.get('status')) > -1;
+    }.property('status'),
 
-    resetPassword: function (passwords, token) {
-        var self = this,
-            resetUrl = this.get('ghostPaths').apiUrl('reset');
+    invited: function () {
+        return ['invited', 'invited-pending'].indexOf(this.get('status')) > -1;
+    }.property('status'),
 
-        return new Ember.RSVP.Promise(function (resolve, reject) {
-            if (!self.validatePassword(passwords).get('passwordIsValid')) {
-                reject(new Error('Errors found! ' + JSON.stringify(self.get('passwordErrors'))));
-            } else {
-                resolve(ic.ajax.request(resetUrl, {
-                    type: 'POST',
-                    headers: {
-                        // @TODO: find a more proper way to do this.
-                        'X-CSRF-Token': $('meta[name="csrf-param"]').attr('content')
-                    },
-                    data: {
-                        newpassword: passwords.newPassword,
-                        ne2password: passwords.ne2Password,
-                        token: token
-                    }
-                }));
-            }
-        });
-    }
+    pending: Ember.computed.equal('status', 'invited-pending').property('status')
 });
 
 export default User;

@@ -1,49 +1,28 @@
-var should = require('should');
-var when = require('when');
-var rewire = require('rewire');
-var packageInfo = require('../../../package');
-var ghost = require('../../../core');
-var permissions = require('../../server/permissions');
-var testUtils = require('../utils');
-var updateCheck = rewire('../../server/update-check');
+/*globals describe, before, beforeEach, afterEach, after, it*/
+/*jshint expr:true*/
+var testUtils       = require('../utils'),
+    should          = require('should'),
+    rewire          = require('rewire'),
+
+    // Stuff we are testing
+    packageInfo     = require('../../../package'),
+    updateCheck     = rewire('../../server/update-check');
 
 describe('Update Check', function () {
     var environmentsOrig;
 
-    before(function (done) {
+    before(function () {
         environmentsOrig = updateCheck.__get__('allowedCheckEnvironments');
         updateCheck.__set__('allowedCheckEnvironments', ['development', 'production', 'testing']);
-
-        ghost().then(function () {
-            return testUtils.clearData();
-        }).then(function () {
-            done();
-        }).catch(done);
     });
 
     after(function () {
         updateCheck.__set__('allowedCheckEnvironments', environmentsOrig);
     });
 
-    beforeEach(function (done) {
-        testUtils.initData().then(function () {
-            return testUtils.insertDefaultFixtures();
-        }).then(function () {
-            return testUtils.insertEditorUser();
-        }).then(function () {
-            return testUtils.insertAuthorUser();
-        }).then(function () {
-            return permissions.init();
-        }).then(function () {
-            done();
-        }).catch(done);
-    });
+    beforeEach(testUtils.setup('owner', 'posts'));
 
-    afterEach(function (done) {
-        testUtils.clearData().then(function () {
-            done();
-        }).catch(done);
-    });
+    afterEach(testUtils.teardown);
 
     it('should report the correct data', function (done) {
         var updateCheckData = updateCheck.__get__('updateCheckData');

@@ -1,32 +1,21 @@
 /*globals describe, it, before, beforeEach, afterEach */
-var testUtils = require('../../utils'),
-    should = require('should'),
+/*jshint expr:true*/
+var testUtils   = require('../../utils'),
+    should      = require('should'),
 
     // Stuff we are testing
-    Models = require('../../../server/models');
+    RoleModel   = require('../../../server/models/role').Role,
+    context     = testUtils.context.admin;
 
 describe('Role Model', function () {
+    // Keep the DB clean
+    before(testUtils.teardown);
+    afterEach(testUtils.teardown);
 
-    var RoleModel = Models.Role;
+    beforeEach(testUtils.setup('role'));
 
-    should.exist(RoleModel);
-
-    before(function (done) {
-        testUtils.clearData().then(function () {
-            done();
-        }).catch(done);
-    });
-
-    beforeEach(function (done) {
-        testUtils.initData().then(function () {
-            done();
-        }).catch(done);
-    });
-
-    afterEach(function (done) {
-        testUtils.clearData().then(function () {
-            done();
-        }).catch(done);
+    before(function () {
+        should.exist(RoleModel);
     });
 
     it('can findAll', function (done) {
@@ -42,6 +31,7 @@ describe('Role Model', function () {
     it('can findOne', function (done) {
         RoleModel.findOne({id: 1}).then(function (foundRole) {
             should.exist(foundRole);
+            foundRole.get('created_at').should.be.an.instanceof(Date);
 
             done();
         }).catch(done);
@@ -51,7 +41,7 @@ describe('Role Model', function () {
         RoleModel.findOne({id: 1}).then(function (foundRole) {
             should.exist(foundRole);
 
-            return foundRole.set({name: 'updated'}).save();
+            return foundRole.set({name: 'updated'}).save(null, context);
         }).then(function () {
             return RoleModel.findOne({id: 1});
         }).then(function (updatedRole) {
@@ -69,7 +59,7 @@ describe('Role Model', function () {
             description: 'test1 description'
         };
 
-        RoleModel.add(newRole, {user: 1}).then(function (createdRole) {
+        RoleModel.add(newRole, context).then(function (createdRole) {
             should.exist(createdRole);
 
             createdRole.attributes.name.should.equal(newRole.name);
@@ -89,7 +79,7 @@ describe('Role Model', function () {
             return RoleModel.destroy(firstRole);
         }).then(function (response) {
             response.toJSON().should.be.empty;
-            return  RoleModel.findOne(firstRole);
+            return RoleModel.findOne(firstRole);
         }).then(function (newResults) {
             should.equal(newResults, null);
 

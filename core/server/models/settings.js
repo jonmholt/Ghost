@@ -3,8 +3,9 @@ var Settings,
     uuid           = require('node-uuid'),
     _              = require('lodash'),
     errors         = require('../errors'),
-    when           = require('when'),
+    Promise        = require('bluebird'),
     validation     = require('../data/validation'),
+    internal       = {context: {internal: true}},
 
     defaultSettings;
 
@@ -19,13 +20,21 @@ function parseDefaultSettings() {
         _.each(settings, function (setting, settingName) {
             setting.type = categoryName;
             setting.key = settingName;
+
             defaultSettingsFlattened[settingName] = setting;
         });
     });
 
     return defaultSettingsFlattened;
 }
-defaultSettings = parseDefaultSettings();
+
+function getDefaultSettings() {
+    if (!defaultSettings) {
+        defaultSettings = parseDefaultSettings();
+    }
+
+    return defaultSettings;
+}
 
 // Each setting is saved as a separate row in the database,
 // but the overlying API treats them as a single key:value mapping
@@ -41,9 +50,19 @@ Settings = ghostBookshelf.Model.extend({
     },
 
     validate: function () {
-        var self = this;
-        return when(validation.validateSchema(self.tableName, self.toJSON())).then(function () {
-            return validation.validateSettings(defaultSettings, self);
+        var self = this,
+            setting = this.toJSON();
+
+        return validation.validateSchema(self.tableName, setting).then(function () {
+            return validation.validateSettings(getDefaultSettings(), self);
+        }).then(function () {
+            var themeName = setting.value || '';
+
+            if (setting.key !== 'activeTheme') {
+                return;
+            }
+
+            return validation.validateActiveTheme(themeName);
         });
     },
 
@@ -58,34 +77,12 @@ Settings = ghostBookshelf.Model.extend({
     }
 
 }, {
-    /**
-    * Returns an array of keys permitted in a method's `options` hash, depending on the current method.
-    * @param {String} methodName The name of the method to check valid options for.
-    * @return {Array} Keys allowed in the `options` hash of the model's method.
-    */
-    permittedOptions: function (methodName) {
-        var options = ghostBookshelf.Model.permittedOptions(),
-
-            // whitelists for the `options` hash argument on methods, by method name.
-            // these are the only options that can be passed to Bookshelf / Knex.
-            validOptions = {
-                add: ['user'],
-                edit: ['user']
-            };
-
-        if (validOptions[methodName]) {
-            options = options.concat(validOptions[methodName]);
-        }
-
-        return options;
-    },
-
     findOne: function (options) {
         // Allow for just passing the key instead of attributes
         if (!_.isObject(options)) {
-            options = { key: options };
+            options = {key: options};
         }
-        return when(ghostBookshelf.Model.findOne.call(this, options));
+        return Promise.resolve(ghostBookshelf.Model.findOne.call(this, options));
     },
 
     edit: function (data, options) {
@@ -96,24 +93,39 @@ Settings = ghostBookshelf.Model.extend({
             data = [data];
         }
 
-        return when.map(data, function (item) {
+        return Promise.map(data, function (item) {
             // Accept an array of models as input
             if (item.toJSON) { item = item.toJSON(); }
             if (!(_.isString(item.key) && item.key.length > 0)) {
-                return when.reject(new errors.ValidationError('Setting key cannot be empty.'));
+                return Promise.reject(new errors.ValidationError('Value in [settings.key] cannot be blank.'));
             }
 
             item = self.filterData(item);
 
-            return Settings.forge({ key: item.key }).fetch(options).then(function (setting) {
-
+            return Settings.forge({key: item.key}).fetch(options).then(function (setting) {
                 if (setting) {
                     return setting.save({value: item.value}, options);
                 }
 
-                return when.reject(new errors.NotFoundError('Unable to find setting to update: ' + item.key));
-
+                return Promise.reject(new errors.NotFoundError('Unable to find setting to update: ' + item.key));
             }, errors.logAndThrowError);
+        });
+    },
+
+    populateDefault: function (key) {
+        if (!getDefaultSettings()[key]) {
+            return Promise.reject(new errors.NotFoundError('Unable to find default setting: ' + key));
+        }
+
+        return this.findOne({key: key}).then(function (foundSetting) {
+            if (foundSetting) {
+                return foundSetting;
+            }
+
+            var defaultSetting = _.clone(getDefaultSettings()[key]);
+            defaultSetting.value = defaultSetting.defaultValue;
+
+            return Settings.forge(defaultSetting).save(null, internal);
         });
     },
 
@@ -122,7 +134,7 @@ Settings = ghostBookshelf.Model.extend({
             var usedKeys = allSettings.models.map(function (setting) { return setting.get('key'); }),
                 insertOperations = [];
 
-            _.each(defaultSettings, function (defaultSetting, defaultSettingKey) {
+            _.each(getDefaultSettings(), function (defaultSetting, defaultSettingKey) {
                 var isMissingFromDB = usedKeys.indexOf(defaultSettingKey) === -1;
                 // Temporary code to deal with old databases with currentVersion settings
                 if (defaultSettingKey === 'databaseVersion' && usedKeys.indexOf('currentVersion') !== -1) {
@@ -130,16 +142,16 @@ Settings = ghostBookshelf.Model.extend({
                 }
                 if (isMissingFromDB) {
                     defaultSetting.value = defaultSetting.defaultValue;
-                    insertOperations.push(Settings.forge(defaultSetting).save(null, {user: 1}));
+                    insertOperations.push(Settings.forge(defaultSetting).save(null, internal));
                 }
             });
 
-            return when.all(insertOperations);
+            return Promise.all(insertOperations);
         });
     }
 
 });
 
 module.exports = {
-    Settings: Settings
+    Settings: ghostBookshelf.model('Settings', Settings)
 };

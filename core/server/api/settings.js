@@ -2,7 +2,7 @@
 // RESTful API for the Setting resource
 var _            = require('lodash'),
     dataProvider = require('../models'),
-    when         = require('when'),
+    Promise      = require('bluebird'),
     config       = require('../config'),
     canThis      = require('../permissions').canThis,
     errors       = require('../errors'),
@@ -11,12 +11,15 @@ var _            = require('lodash'),
     docName      = 'settings',
     settings,
 
+    updateConfigTheme,
     updateSettingsCache,
     settingsFilter,
     filterPaths,
     readSettingsResult,
     settingsResult,
     canEditAllSettings,
+    populateDefaultSetting,
+    hasPopulatedDefaults = false,
 
     /**
      * ## Cache
@@ -26,12 +29,28 @@ var _            = require('lodash'),
      */
     settingsCache = {};
 
+/**
+* ### Updates Config Theme Settings
+* Maintains the cache of theme specific variables that are reliant on settings.
+* @private
+*/
+updateConfigTheme = function () {
+    config.set({
+        theme: {
+            title: (settingsCache.title && settingsCache.title.value) || '',
+            description: (settingsCache.description && settingsCache.description.value) || '',
+            logo: (settingsCache.logo && settingsCache.logo.value) || '',
+            cover: (settingsCache.cover && settingsCache.cover.value) || '',
+            navigation: (settingsCache.navigation && JSON.parse(settingsCache.navigation.value)) || []
+        }
+    });
+};
 
 /**
  * ### Update Settings Cache
  * Maintain the internal cache of the settings object
  * @public
- * @param settings
+ * @param {Object} settings
  * @returns {Settings}
  */
 updateSettingsCache = function (settings) {
@@ -42,12 +61,16 @@ updateSettingsCache = function (settings) {
             settingsCache[key] = setting;
         });
 
-        return when(settingsCache);
+        updateConfigTheme();
+
+        return Promise.resolve(settingsCache);
     }
 
     return dataProvider.Settings.findAll()
         .then(function (result) {
             settingsCache = readSettingsResult(result.models);
+
+            updateConfigTheme();
 
             return settingsCache;
         });
@@ -59,8 +82,8 @@ updateSettingsCache = function (settings) {
  * ### Settings Filter
  * Filters an object based on a given filter object
  * @private
- * @param settings
- * @param filter
+ * @param {Object} settings
+ * @param {String} filter
  * @returns {*}
  */
 settingsFilter = function (settings, filter) {
@@ -95,7 +118,7 @@ filterPaths = function (paths, active) {
     }
 
     _.each(pathKeys, function (key) {
-        //do not include hidden files or _messages
+        // do not include hidden files or _messages
         if (key.indexOf('.') !== 0 &&
                 key !== '_messages' &&
                 key !== 'README.md'
@@ -118,11 +141,10 @@ filterPaths = function (paths, active) {
     return res;
 };
 
-
 /**
  * ### Read Settings Result
  * @private
- * @param settingsModels
+ * @param {Array} settingsModels
  * @returns {Settings}
  */
 readSettingsResult = function (settingsModels) {
@@ -133,11 +155,11 @@ readSettingsResult = function (settingsModels) {
 
             return memo;
         }, {}),
-        themes = config().paths.availableThemes,
-        apps = config().paths.availableApps,
+        themes = config.paths.availableThemes,
+        apps = config.paths.availableApps,
         res;
 
-    if (settings.activeTheme) {
+    if (settings.activeTheme && themes) {
         res = filterPaths(themes, settings.activeTheme.value);
 
         settings.availableThemes = {
@@ -147,7 +169,7 @@ readSettingsResult = function (settingsModels) {
         };
     }
 
-    if (settings.activeApps) {
+    if (settings.activeApps && apps) {
         res = filterPaths(apps, JSON.parse(settings.activeApps.value));
 
         settings.availableApps = {
@@ -163,8 +185,8 @@ readSettingsResult = function (settingsModels) {
 /**
  * ### Settings Result
  * @private
- * @param settings
- * @param type
+ * @param {Object} settings
+ * @param {String} type
  * @returns {{settings: *}}
  */
 settingsResult = function (settings, type) {
@@ -184,30 +206,66 @@ settingsResult = function (settings, type) {
 };
 
 /**
+ * ### Populate Default Setting
+ * @private
+ * @param {String} key
+ * @returns Promise(Setting)
+ */
+populateDefaultSetting = function (key) {
+    // Call populateDefault and update the settings cache
+    return dataProvider.Settings.populateDefault(key).then(function (defaultSetting) {
+        // Process the default result and add to settings cache
+        var readResult = readSettingsResult([defaultSetting]);
+
+        // Add to the settings cache
+        return updateSettingsCache(readResult).then(function () {
+            // Get the result from the cache with permission checks
+        });
+    }).catch(function (err) {
+        // Pass along NotFoundError
+        if (typeof err === errors.NotFoundError) {
+            return Promise.reject(err);
+        }
+
+        // TODO: Different kind of error?
+        return Promise.reject(new errors.NotFoundError('Problem finding setting: ' + key));
+    });
+};
+
+/**
  * ### Can Edit All Settings
  * Check that this edit request is allowed for all settings requested to be updated
  * @private
- * @param settingsInfo
+ * @param {Object} settingsInfo
  * @returns {*}
  */
 canEditAllSettings = function (settingsInfo, options) {
-    var checks = _.map(settingsInfo, function (settingInfo) {
-        var setting = settingsCache[settingInfo.key];
+    var checkSettingPermissions = function (setting) {
+            if (setting.type === 'core' && !(options.context && options.context.internal)) {
+                return Promise.reject(
+                    new errors.NoPermissionError('Attempted to access core setting from external request')
+                );
+            }
 
-        if (!setting) {
-            return when.reject(new errors.NotFoundError('Unable to find setting: ' + settingInfo.key));
-        }
+            return canThis(options.context).edit.setting(setting.key).catch(function () {
+                return Promise.reject(new errors.NoPermissionError('You do not have permission to edit settings.'));
+            });
+        },
+        checks = _.map(settingsInfo, function (settingInfo) {
+            var setting = settingsCache[settingInfo.key];
 
-        if (setting.type === 'core' && !(options.context && options.context.internal)) {
-            return when.reject(
-                new errors.NoPermissionError('Attempted to access core setting from external request')
-            );
-        }
+            if (!setting) {
+                // Try to populate a default setting if not in the cache
+                return populateDefaultSetting(settingInfo.key).then(function (defaultSetting) {
+                    // Get the result from the cache with permission checks
+                    return checkSettingPermissions(defaultSetting);
+                });
+            }
 
-        return canThis(options.context).edit.setting(settingInfo.key);
-    });
+            return checkSettingPermissions(setting);
+        });
 
-    return when.all(checks);
+    return Promise.all(checks);
 };
 
 /**
@@ -219,17 +277,25 @@ settings = {
 
     /**
      * ### Browse
-     * @param options
+     * @param {Object} options
      * @returns {*}
      */
     browse: function browse(options) {
+        // First, check if we have populated the settings from default-settings yet
+        if (!hasPopulatedDefaults) {
+            return dataProvider.Settings.populateDefaults().then(function () {
+                hasPopulatedDefaults = true;
+                return settings.browse(options);
+            });
+        }
+
         options = options || {};
 
         var result = settingsResult(settingsCache, options.type);
 
         // If there is no context, return only blog settings
         if (!options.context) {
-            return when(_.filter(result.settings, function (setting) { return setting.type === 'blog'; }));
+            return Promise.resolve(_.filter(result.settings, function (setting) { return setting.type === 'blog'; }));
         }
 
         // Otherwise return whatever this context is allowed to browse
@@ -245,38 +311,48 @@ settings = {
 
     /**
      * ### Read
-     * @param options
+     * @param {Object} options
      * @returns {*}
      */
     read: function read(options) {
         if (_.isString(options)) {
-            options = { key: options };
+            options = {key: options};
         }
 
-        var setting = settingsCache[options.key],
-            result = {};
+        var getSettingsResult = function () {
+                var setting = settingsCache[options.key],
+                    result = {};
 
-        if (!setting) {
-            return when.reject(new errors.NotFoundError('Unable to find setting: ' + options.key));
+                result[options.key] = setting;
+
+                if (setting.type === 'core' && !(options.context && options.context.internal)) {
+                    return Promise.reject(
+                        new errors.NoPermissionError('Attempted to access core setting from external request')
+                    );
+                }
+
+                if (setting.type === 'blog') {
+                    return Promise.resolve(settingsResult(result));
+                }
+
+                return canThis(options.context).read.setting(options.key).then(function () {
+                    return settingsResult(result);
+                }, function () {
+                    return Promise.reject(new errors.NoPermissionError('You do not have permission to read settings.'));
+                });
+            };
+
+        // If the setting is not already in the cache
+        if (!settingsCache[options.key]) {
+            // Try to populate the setting from default-settings file
+            return populateDefaultSetting(options.key).then(function () {
+                // Get the result from the cache with permission checks
+                return getSettingsResult();
+            });
         }
 
-        result[options.key] = setting;
-
-        if (setting.type === 'core' && !(options.context && options.context.internal)) {
-            return when.reject(
-                new errors.NoPermissionError('Attempted to access core setting from external request')
-            );
-        }
-
-        if (setting.type === 'blog') {
-            return when(settingsResult(result));
-        }
-
-        return canThis(options.context).read.setting(options.key).then(function () {
-            return settingsResult(result);
-        }, function () {
-            return when.reject(new errors.NoPermissionError('You do not have permission to read settings.'));
-        });
+        // Get the result from the cache with permission checks
+        return getSettingsResult();
     },
 
     /**
@@ -293,10 +369,10 @@ settings = {
 
         // Allow shorthand syntax where a single key and value are passed to edit instead of object and options
         if (_.isString(object)) {
-            object = { settings: [{ key: object, value: options }]};
+            object = {settings: [{key: object, value: options}]};
         }
 
-        //clean data
+        // clean data
         _.each(object.settings, function (setting) {
             if (!_.isString(setting.value)) {
                 setting.value = JSON.stringify(setting.value);
@@ -320,8 +396,6 @@ settings = {
                 var readResult = readSettingsResult(result);
 
                 return updateSettingsCache(readResult).then(function () {
-                    return config.theme.update(settings, config().url);
-                }).then(function () {
                     return settingsResult(readResult, type);
                 });
             });

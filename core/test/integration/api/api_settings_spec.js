@@ -1,65 +1,50 @@
 /*globals describe, before, beforeEach, afterEach, it */
-var testUtils = require('../../utils'),
-    should    = require('should'),
-    _         = require('lodash'),
+/*jshint expr:true*/
+var testUtils           = require('../../utils'),
+    should              = require('should'),
+    _                   = require('lodash'),
 
     // Stuff we are testing
-    permissions   = require('../../../server/permissions'),
-    DataGenerator    = require('../../utils/fixtures/data-generator'),
-    SettingsAPI      = require('../../../server/api/settings');
+    SettingsAPI         = require('../../../server/api/settings'),
+    defaultContext      = {user: 1},
+    internalContext     = {internal: true},
+    callApiWithContext,
+    getErrorDetails;
 
 describe('Settings API', function () {
+    // Keep the DB clean
+    before(testUtils.teardown);
+    afterEach(testUtils.teardown);
+    beforeEach(testUtils.setup('users:roles', 'perms:setting', 'settings', 'perms:init'));
 
-    var defaultContext = {
-            user: 1
-        },
-        internalContext = {
-            internal: true
-        },
-        callApiWithContext = function (context, method) {
-            var args = _.toArray(arguments),
-                options = args[args.length - 1];
+    should.exist(SettingsAPI);
 
-            if (_.isObject(options)) {
-                options.context = _.clone(context);
+    callApiWithContext = function (context, method) {
+        var args = _.toArray(arguments),
+            options = args[args.length - 1];
+
+        if (_.isObject(options)) {
+            options.context = _.clone(context);
+        }
+
+        return SettingsAPI[method].apply({}, args.slice(2));
+    };
+    getErrorDetails = function (done) {
+        return function (err) {
+            if (err instanceof Error) {
+                return done(err);
             }
 
-            return SettingsAPI[method].apply({}, args.slice(2));
-        },
-        getErrorDetails = function (done) {
-            return function (err) {
-                if (err instanceof Error) {
-                    return done(err);
-                }
-
-                done(new Error(err.message));
-            };
+            done(new Error(err.message));
         };
+    };
 
-    before(function (done) {
-        testUtils.clearData().then(function () {
-            done();
-        }).catch(done);
-    });
+    it('uses Date objects for dateTime fields', function (done) {
+        return callApiWithContext(defaultContext, 'browse', {}).then(function (results) {
+            should.exist(results);
 
-    beforeEach(function (done) {
-        testUtils.initData()
-            .then(function () {
-                return testUtils.insertDefaultFixtures();
-            })
-            .then(function () {
-                return SettingsAPI.updateSettingsCache();
-            })
-            .then(function () {
-                return permissions.init();
-            })
-            .then(function () {
-                done();
-            }).catch(done);
-    });
+            results.settings[0].created_at.should.be.an.instanceof(Date);
 
-    afterEach(function (done) {
-        testUtils.clearData().then(function () {
             done();
         }).catch(getErrorDetails(done));
     });
@@ -77,7 +62,6 @@ describe('Settings API', function () {
             done();
         }).catch(getErrorDetails(done));
     });
-
 
     it('can browse by type', function (done) {
         return callApiWithContext(defaultContext, 'browse', {type: 'blog'}).then(function (results) {
@@ -119,7 +103,7 @@ describe('Settings API', function () {
     });
 
     it('cannot read core settings if not an internal request', function (done) {
-        return callApiWithContext(defaultContext, 'read',  {key: 'databaseVersion'}).then(function (response) {
+        return callApiWithContext(defaultContext, 'read',  {key: 'databaseVersion'}).then(function () {
             done(new Error('Allowed to read databaseVersion with external request'));
         }).catch(function (error) {
             should.exist(error);
@@ -140,7 +124,7 @@ describe('Settings API', function () {
     });
 
     it('can read by object key', function (done) {
-        return callApiWithContext(defaultContext, 'read', { key: 'title' }).then(function (response) {
+        return callApiWithContext(defaultContext, 'read', {key: 'title'}).then(function (response) {
             should.exist(response);
             testUtils.API.checkResponse(response, 'settings');
             response.settings.length.should.equal(1);
@@ -151,7 +135,7 @@ describe('Settings API', function () {
     });
 
     it('can edit', function (done) {
-        return callApiWithContext(defaultContext, 'edit', {settings: [{ key: 'title', value: 'UpdatedGhost'}]}, {})
+        return callApiWithContext(defaultContext, 'edit', {settings: [{key: 'title', value: 'UpdatedGhost'}]}, {})
             .then(function (response) {
                 should.exist(response);
                 testUtils.API.checkResponse(response, 'settings');
@@ -163,7 +147,7 @@ describe('Settings API', function () {
     });
 
     it('cannot edit a core setting if not an internal request', function (done) {
-        return callApiWithContext(defaultContext, 'edit', {settings: [{ key: 'databaseVersion', value: '999'}]}, {})
+        return callApiWithContext(defaultContext, 'edit', {settings: [{key: 'databaseVersion', value: '999'}]}, {})
             .then(function () {
                 done(new Error('Allowed to edit a core setting as external request'));
             }).catch(function (err) {
@@ -176,7 +160,7 @@ describe('Settings API', function () {
     });
 
     it('can edit a core setting with an internal request', function (done) {
-        return callApiWithContext(internalContext, 'edit', {settings: [{ key: 'databaseVersion', value: '999'}]}, {})
+        return callApiWithContext(internalContext, 'edit', {settings: [{key: 'databaseVersion', value: '999'}]}, {})
             .then(function (response) {
                 should.exist(response);
                 testUtils.API.checkResponse(response, 'settings');
@@ -194,6 +178,20 @@ describe('Settings API', function () {
             response.settings.length.should.equal(1);
             testUtils.API.checkResponse(response.settings[0], 'setting');
             response.settings[0].value.should.equal('[]');
+
+            done();
+        }).catch(done);
+    });
+
+    it('does not allow an active theme which is not installed', function (done) {
+        return callApiWithContext(defaultContext, 'edit', 'activeTheme', {
+            settings: [{key: 'activeTheme', value: 'rasper'}]
+        }).then(function () {
+            done(new Error('Allowed to set an active theme which is not installed'));
+        }).catch(function (err) {
+            should.exist(err);
+
+            err.type.should.eql('ValidationError');
 
             done();
         }).catch(done);

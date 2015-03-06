@@ -1,57 +1,60 @@
+var SettingsGeneralController = Ember.Controller.extend({
+    selectedTheme: null,
 
-var elementLookup = {
-    title: '#blog-title',
-    description: '#blog-description',
-    email: '#email-address',
-    postsPerPage: '#postsPerPage'
-};
+    logoImageSource: Ember.computed('model.logo', function () {
+        return this.get('model.logo') || '';
+    }),
 
-var SettingsGeneralController = Ember.ObjectController.extend({
-    isDatedPermalinks: function (key, value) {
+    coverImageSource: Ember.computed('model.cover', function () {
+        return this.get('model.cover') || '';
+    }),
+
+    isDatedPermalinks: Ember.computed('model.permalinks', function (key, value) {
         // setter
         if (arguments.length > 1) {
-            this.set('permalinks', value ? '/:year/:month/:day/:slug/' : '/:slug/');
+            this.set('model.permalinks', value ? '/:year/:month/:day/:slug/' : '/:slug/');
         }
 
         // getter
-        var slugForm = this.get('permalinks');
+        var slugForm = this.get('model.permalinks');
 
         return slugForm !== '/:slug/';
-    }.property('permalinks'),
+    }),
+
+    themes: Ember.computed(function () {
+        return this.get('model.availableThemes').reduce(function (themes, t) {
+            var theme = {};
+
+            theme.name = t.name;
+            theme.label = t.package ? t.package.name + ' - ' + t.package.version : t.name;
+            theme.package = t.package;
+            theme.active = !!t.active;
+
+            themes.push(theme);
+
+            return themes;
+        }, []);
+    }).readOnly(),
 
     actions: {
-        'save': function () {
-            // Validate and save settings
-            var model = this.get('model'),
-                // @TODO: Don't know how to scope this to this controllers view because this.view is null
-                errs = model.validate();
+        save: function () {
+            var self = this;
 
-            if (errs.length > 0) {
-                // Set the actual element from this view based on the error
-                errs.forEach(function (err) {
-                    // @TODO: Probably should still be scoped to this controllers root element.
-                    err.el = $(elementLookup[err.el]);
-                });
+            return this.get('model').save().then(function (model) {
+                self.notifications.showSuccess('Settings successfully saved.');
 
-                // Let the applicationRoute handle validation errors
-                this.send('handleErrors', errs);
-            } else {
-                model.save().then(function () {
-                    // @TODO: Notification of success
-                    window.alert('Saved data!');
-                }, function () {
-                    // @TODO: Notification of error
-                    window.alert('Error saving data');
-                });
+                return model;
+            }).catch(function (errors) {
+                self.notifications.showErrors(errors);
+            });
+        },
+
+        checkPostsPerPage: function () {
+            var postsPerPage = this.get('model.postsPerPage');
+
+            if (postsPerPage < 1 || postsPerPage > 1000 || isNaN(postsPerPage)) {
+                this.set('model.postsPerPage', 5);
             }
-        },
-
-        'uploadLogo': function () {
-            // @TODO: Integrate with Modal component
-        },
-
-        'uploadCover': function () {
-            // @TODO: Integrate with Modal component
         }
     }
 });

@@ -4,22 +4,28 @@
 // Ghost's JSON API is integral to the workings of Ghost, regardless of whether you want to access data internally,
 // from a theme, an app, or from an external app, you'll use the Ghost JSON API to do so.
 
-var _             = require('lodash'),
-    when          = require('when'),
-    config        = require('../config'),
+var _              = require('lodash'),
+    config         = require('../config'),
     // Include Endpoints
-    db            = require('./db'),
-    mail          = require('./mail'),
-    notifications = require('./notifications'),
-    posts         = require('./posts'),
-    settings      = require('./settings'),
-    tags          = require('./tags'),
-    themes        = require('./themes'),
-    users         = require('./users'),
-    slugs         = require('./slugs'),
+    configuration  = require('./configuration'),
+    db             = require('./db'),
+    mail           = require('./mail'),
+    notifications  = require('./notifications'),
+    posts          = require('./posts'),
+    roles          = require('./roles'),
+    settings       = require('./settings'),
+    tags           = require('./tags'),
+    themes         = require('./themes'),
+    users          = require('./users'),
+    slugs          = require('./slugs'),
+    authentication = require('./authentication'),
+    uploads        = require('./upload'),
+    dataExport     = require('../data/export'),
+    errors         = require('../errors'),
 
     http,
     formatHttpErrors,
+    addHeaders,
     cacheInvalidationHeader,
     locationHeader,
     contentDispositionHeader,
@@ -45,45 +51,44 @@ init = function () {
  * @private
  * @param {Express.request} req Original HTTP Request
  * @param {Object} result API method result
- * @return {Promise(String)} Resolves to header string
+ * @return {String} Resolves to header string
  */
 cacheInvalidationHeader = function (req, result) {
-    var parsedUrl = req._parsedUrl.pathname.replace(/\/$/, '').split('/'),
+    var parsedUrl = req._parsedUrl.pathname.replace(/^\/|\/$/g, '').split('/'),
         method = req.method,
-        endpoint = parsedUrl[4],
-        id = parsedUrl[5],
+        endpoint = parsedUrl[0],
+        id = parsedUrl[1],
         cacheInvalidate,
         jsonResult = result.toJSON ? result.toJSON() : result,
         post,
-        wasPublished,
-        wasDeleted;
+        hasStatusChanged,
+        wasDeleted,
+        wasPublishedUpdated;
 
     if (method === 'POST' || method === 'PUT' || method === 'DELETE') {
-        if (endpoint === 'settings' || endpoint === 'users' || endpoint === 'db') {
+        if (endpoint === 'settings' || endpoint === 'users' || endpoint === 'db' || endpoint === 'tags') {
             cacheInvalidate = '/*';
         } else if (endpoint === 'posts') {
             post = jsonResult.posts[0];
-            wasPublished = post.statusChanged && post.status === 'published';
+            hasStatusChanged = post.statusChanged;
             wasDeleted = method === 'DELETE';
+            // Invalidate cache when post was updated but not when post is draft
+            wasPublishedUpdated = method === 'PUT' && post.status === 'published';
 
             // Remove the statusChanged value from the response
-            if (post.statusChanged) {
-                delete post.statusChanged;
-            }
+            delete post.statusChanged;
 
             // Don't set x-cache-invalidate header for drafts
-            if (wasPublished || wasDeleted) {
-                cacheInvalidate = '/, /page/*, /rss/, /rss/*, /tag/*';
-                if (id && post.slug) {
-                    return config.urlForPost(settings, post).then(function (postUrl) {
-                        return cacheInvalidate + ', ' + postUrl;
-                    });
+            if (hasStatusChanged || wasDeleted || wasPublishedUpdated) {
+                cacheInvalidate = '/, /page/*, /rss/, /rss/*, /tag/*, /author/*, /sitemap-*.xml';
+                if (id && post.slug && post.url) {
+                    cacheInvalidate +=  ', ' + post.url;
                 }
             }
         }
     }
 
-    return when(cacheInvalidate);
+    return cacheInvalidate;
 };
 
 /**
@@ -95,27 +100,30 @@ cacheInvalidationHeader = function (req, result) {
  * @private
  * @param {Express.request} req Original HTTP Request
  * @param {Object} result API method result
- * @return {Promise(String)} Resolves to header string
+ * @return {String} Resolves to header string
  */
 locationHeader = function (req, result) {
     var apiRoot = config.urlFor('api'),
         location,
-        post,
-        notification,
-        parsedUrl = req._parsedUrl.pathname.replace(/\/$/, '').split('/'),
-        endpoint = parsedUrl[4];
+        newObject;
 
     if (req.method === 'POST') {
         if (result.hasOwnProperty('posts')) {
-            post = result.posts[0];
-            location = apiRoot + '/posts/' + post.id + '/?status=' + post.status;
-        } else if (endpoint === 'notifications') {
-            notification = result.notifications;
-            location = apiRoot + '/notifications/' + notification[0].id;
+            newObject = result.posts[0];
+            location = apiRoot + '/posts/' + newObject.id + '/?status=' + newObject.status;
+        } else if (result.hasOwnProperty('notifications')) {
+            newObject = result.notifications[0];
+            location = apiRoot + '/notifications/' + newObject.id + '/';
+        } else if (result.hasOwnProperty('users')) {
+            newObject = result.users[0];
+            location = apiRoot + '/users/' + newObject.id + '/';
+        } else if (result.hasOwnProperty('tags')) {
+            newObject = result.tags[0];
+            location = apiRoot + '/tags/' + newObject.id + '/';
         }
     }
 
-    return when(location);
+    return location;
 };
 
 /**
@@ -133,11 +141,10 @@ locationHeader = function (req, result) {
  * @return {string}
  */
 contentDispositionHeader = function () {
-    // replace ':' with '_' for OS that don't support it
-    var now = (new Date()).toJSON().replace(/:/g, '_');
-    return 'Attachment; filename="ghost-' + now + '.json"';
+    return dataExport.fileName().then(function (filename) {
+        return 'Attachment; filename="' + filename + '"';
+    });
 };
-
 
 /**
  * ### Format HTTP Errors
@@ -158,7 +165,7 @@ formatHttpErrors = function (error) {
     _.each(error, function (errorItem) {
         var errorContent = {};
 
-        //TODO: add logic to set the correct status code
+        // TODO: add logic to set the correct status code
         statusCode = errorItem.code || 500;
 
         errorContent.message = _.isString(errorItem) ? errorItem :
@@ -168,6 +175,41 @@ formatHttpErrors = function (error) {
     });
 
     return {errors: errors, statusCode: statusCode};
+};
+
+addHeaders = function (apiMethod, req, res, result) {
+    var cacheInvalidation,
+        location,
+        contentDisposition;
+
+    cacheInvalidation = cacheInvalidationHeader(req, result);
+    if (cacheInvalidation) {
+        res.set({'X-Cache-Invalidate': cacheInvalidation});
+    }
+
+    if (req.method === 'POST') {
+        location = locationHeader(req, result);
+        if (location) {
+            res.set({Location: location});
+            // The location header indicates that a new object was created.
+            // In this case the status code should be 201 Created
+            res.status(201);
+        }
+    }
+
+    if (apiMethod === db.exportContent) {
+        contentDisposition = contentDispositionHeader()
+            .then(function addContentDispositionHeader(header) {
+                // Add Content-Disposition Header
+                if (apiMethod === db.exportContent) {
+                    res.set({
+                        'Content-Disposition': header
+                    });
+                }
+            });
+    }
+
+    return contentDisposition;
 };
 
 /**
@@ -186,7 +228,7 @@ http = function (apiMethod) {
         var object = req.body,
             options = _.extend({}, req.files, req.query, req.params, {
                 context: {
-                    user: (req.session && req.session.user) ? req.session.user : null
+                    user: (req.user && req.user.id) ? req.user.id : null
                 }
             });
 
@@ -197,42 +239,18 @@ http = function (apiMethod) {
             options = {};
         }
 
-        return apiMethod(object, options)
-            // Handle adding headers
-            .then(function onSuccess(result) {
-                // Add X-Cache-Invalidate header
-                return cacheInvalidationHeader(req, result)
-                    .then(function addCacheHeader(header) {
-                        if (header) {
-                            res.set({'X-Cache-Invalidate': header});
-                        }
-
-                        // Add Location header
-                        return locationHeader(req, result);
-                    }).then(function addLocationHeader(header) {
-                        if (header) {
-                            res.set({'Location': header});
-                            // The location header indicates that a new object was created.
-                            // In this case the status code should be 201 Created
-                            res.status(201);
-                        }
-
-                        // Add Content-Disposition Header
-                        if (apiMethod === db.exportContent) {
-                            res.set({
-                                'Content-Disposition': contentDispositionHeader()
-                            });
-                        }
-                        // #### Success
-                        // Send a properly formatting HTTP response containing the data with correct headers
-                        res.json(result || {});
-                    });
-            }).catch(function onError(error) {
-                // #### Error
-                var httpErrors = formatHttpErrors(error);
-                // Send a properly formatted HTTP response containing the errors
-                res.json(httpErrors.statusCode, {errors: httpErrors.errors});
-            });
+        return apiMethod(object, options).tap(function onSuccess(response) {
+            // Add X-Cache-Invalidate, Location, and Content-Disposition headers
+            return addHeaders(apiMethod, req, res, response);
+        }).then(function (response) {
+            // Send a properly formatting HTTP response containing the data with correct headers
+            res.json(response || {});
+        }).catch(function onError(error) {
+            errors.logError(error);
+            var httpErrors = formatHttpErrors(error);
+            // Send a properly formatted HTTP response containing the errors
+            res.status(httpErrors.statusCode).json({errors: httpErrors.errors});
+        });
     };
 };
 
@@ -244,15 +262,19 @@ module.exports = {
     init: init,
     http: http,
     // API Endpoints
+    configuration: configuration,
     db: db,
     mail: mail,
     notifications: notifications,
     posts: posts,
+    roles: roles,
     settings: settings,
     tags: tags,
     themes: themes,
     users: users,
-    slugs: slugs
+    slugs: slugs,
+    authentication: authentication,
+    uploads: uploads
 };
 
 /**

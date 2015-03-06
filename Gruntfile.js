@@ -5,13 +5,20 @@
 // **Usage instructions:** can be found in the [Custom Tasks](#custom%20tasks) section or by running `grunt --help`.
 //
 // **Debug tip:** If you have any problems with any Grunt tasks, try running them with the `--verbose` command
-var path           = require('path'),
+var _              = require('lodash'),
     colors         = require('colors'),
-    fs             = require('fs'),
-    _              = require('lodash'),
-    buildDirectory = path.resolve(process.cwd(), '.build'),
-    distDirectory  = path.resolve(process.cwd(), '.dist'),
-    bootstrap      = require('./core/bootstrap'),
+    fs             = require('fs-extra'),
+    moment         = require('moment'),
+    getTopContribs = require('top-gh-contribs'),
+    path           = require('path'),
+    Promise        = require('bluebird'),
+    request        = require('request'),
+
+    escapeChar     = process.platform.match(/^win/) ? '^' : '\\',
+    cwd            = process.cwd().replace(/( |\(|\))/g, escapeChar + '$1'),
+    buildDirectory = path.resolve(cwd, '.build'),
+    distDirectory  = path.resolve(cwd, '.dist'),
+    mochaPath      = path.resolve(cwd + '/node_modules/grunt-mocha-cli/node_modules/mocha/bin/mocha'),
 
     // ## Build File Patterns
     // A list of files and patterns to include when creating a release zip.
@@ -27,10 +34,54 @@ var path           = require('path'),
         });
     }()),
 
+    // ## List of files we want to lint through jshint and jscs to make sure
+    // they conform to our desired code styles.
+    lintFiles = {
+        // Linting files for server side or shared javascript code.
+        server: {
+            files: {
+                src: [
+                    '*.js',
+                    '!config*.js', // note: i added this, do we want this linted?
+                    'core/*.js',
+                    'core/server/**/*.js',
+                    'core/shared/**/*.js',
+                    '!core/shared/vendor/**/*.js'
+                ]
+            }
+        },
+        // Linting files for client side javascript code.
+        client: {
+            files: {
+                src: [
+                    'core/client/**/*.js',
+                    '!core/client/docs/js/*.js',
+                    '!core/client/assets/vendor/**/*.js',
+                    '!core/client/tpl/**/*.js'
+                ]
+            }
+        },
+        clientTests: {
+            files: {
+                src: [
+                    'core/test/client/**/*.js'
+                ]
+            }
+        },
+        // Linting files for test code.
+        test: {
+            files: {
+                src: [
+                    'core/test/**/*.js',
+                    '!core/test/client/**/*.js'
+                ]
+            }
+        }
+    },
+
     // ## Grunt configuration
 
     configureGrunt = function (grunt) {
-
         // *This is not useful but required for jshint*
         colors.setTheme({silly: 'rainbow'});
 
@@ -42,8 +93,6 @@ var path           = require('path'),
         var cfg = {
             // #### Common paths used by tasks
             paths: {
-                // adminAssets: './core/client/', ?? who knows...
-                adminOldAssets: './core/clientold/assets',
                 build: buildDirectory,
                 releaseBuild: path.join(buildDirectory, 'release'),
                 dist: distDirectory,
@@ -58,35 +107,28 @@ var path           = require('path'),
             // Watch files and livereload in the browser during development.
             // See the [grunt dev](#live%20reload) task for how this is used.
             watch: {
-                handlebars: {
-                    files: ['core/clientold/tpl/**/*.hbs'],
-                    tasks: ['handlebars']
+                shared: {
+                    files: ['core/shared/**/*.js'],
+                    tasks: ['concat:dev']
                 },
-                'handlebars-ember': {
+                emberTemplates: {
                     files: ['core/client/**/*.hbs'],
                     tasks: ['emberTemplates:dev']
                 },
                 ember: {
-                    files: ['core/client/**/*.js'],
-                    tasks: ['clean:tmp', 'transpile', 'concat_sourcemap']
+                    files: ['core/client/**/*.js', 'core/test/client/**/*.js'],
+                    tasks: ['clean:tmp', 'transpile', 'concat_sourcemap:dev', 'concat_sourcemap:tests']
                 },
-                concat: {
+                sass: {
                     files: [
-                        'core/clientold/*.js',
-                        'core/clientold/**/*.js'
+                        'core/client/assets/sass/**/*.scss'
                     ],
-                    tasks: ['concat']
-                },
-                'ghost-ui': {
-                    files: [
-                        'bower_components/ghost-ui/dist/css/*.css'
-                    ],
-                    tasks: ['copy:dev']
+                    tasks: ['css']
                 },
                 livereload: {
                     files: [
-                        'content/themes/casper/css/*.css',
-                        'content/themes/casper/js/*.js',
+                        'content/themes/casper/assets/css/*.css',
+                        'content/themes/casper/assets/js/*.js',
                         'core/client/assets/css/*.css',
                         'core/built/scripts/*.js'
                     ],
@@ -125,37 +167,64 @@ var path           = require('path'),
             // ### grunt-contrib-jshint
             // Linting rules, run as part of `grunt validate`. See [grunt validate](#validate) and its subtasks for
             // more information.
-            jshint: {
-                // Linting rules for server side or shared javascript code
-                server: {
-                    options: {
-                        jshintrc: '.jshintrc'
+            jshint: (function () {
+                return _.merge({
+                    server: {
+                        options: {
+                            jshintrc: '.jshintrc'
+                        }
                     },
-                    files: {
-                        src: [
-                            '*.js',
-                            'core/*.js',
-                            'core/server/**/*.js',
-                            'core/shared/**/*.js',
-                            '!core/shared/vendor/**/*.js',
-                            '!core/shared/lib/**/*.js'
-                        ]
-                    }
-                },
-                // Linting rules for client side javascript code
-                client: {
-                    options: {
-                        jshintrc: 'core/client/.jshintrc'
+                    client: {
+                        options: {
+                            jshintrc: 'core/client/.jshintrc'
+                        }
                     },
-                    files: {
-                        src: [
-                            'core/client/**/*.js',
-                            '!core/client/assets/vendor/**/*.js',
-                            '!core/client/tpl/**/*.js'
-                        ]
+                    clientTests: {
+                        options: {
+                            jshintrc: 'core/test/client/.jshintrc'
+                        }
+                    },
+                    test: {
+                        options: {
+                            jshintrc: 'core/test/.jshintrc'
+                        }
                     }
-                }
-            },
+                }, lintFiles);
+            })(),
+
+            // ### grunt-jscs
+            // Code style rules, run as part of `grunt validate`. See [grunt validate](#validate) and its subtasks for
+            // more information.
+            jscs: (function () {
+                var jscsConfig = _.merge({
+                    server: {
+                        options: {
+                            config: '.jscsrc'
+                        }
+                    },
+                    client: {
+                        options: {
+                            config: '.jscsrc',
+                            esnext: true,
+                            disallowObjectController: true
+                        }
+                    },
+                    clientTests: {
+                        options: {
+                            config: '.jscsrc',
+                            esnext: true,
+                            disallowObjectController: true
+                        }
+                    },
+                    test: {
+                        options: {
+                            config: '.jscsrc'
+                        }
+                    }
+                }, lintFiles);
+
+                return jscsConfig;
+            })(),
 
             // ### grunt-mocha-cli
             // Configuration for the mocha test runner, used to run unit, integration and route tests as part of
@@ -163,18 +232,25 @@ var path           = require('path'),
             mochacli: {
                 options: {
                     ui: 'bdd',
-                    reporter: 'spec',
-                    timeout: '15000'
+                    reporter: grunt.option('reporter') || 'spec',
+                    timeout: '15000',
+                    save: grunt.option('reporter-output')
                 },
 
                 // #### All Unit tests
                 unit: {
-                    src: ['core/test/unit/**/*_spec.js']
+                    src: [
+                        'core/test/unit/**/*_spec.js'
+                    ]
                 },
 
                 // ##### Groups of unit tests
                 server: {
                     src: ['core/test/unit/**/server*_spec.js']
+                },
+
+                helpers: {
+                    src: ['core/test/unit/server_helpers/*_spec.js']
                 },
 
                 showdown: {
@@ -217,10 +293,18 @@ var path           = require('path'),
 
                 // #### All Route tests
                 routes: {
-                    src: ['core/test/functional/routes/**/*_test.js']
+                    src: [
+                        'core/test/functional/routes/**/*_test.js'
+                    ]
+                },
+
+                // #### All Module tests
+                module: {
+                    src: [
+                        'core/test/functional/module/**/*_test.js'
+                    ]
                 }
             },
-
 
             // ### grunt-shell
             // Command line tools where it's easier to run a command directly than configure a grunt plugin
@@ -229,40 +313,69 @@ var path           = require('path'),
                 // Used as part of `grunt init`. See the section on [Building Assets](#building%20assets) for more
                 // information.
                 bower: {
-                    command: path.resolve(__dirname.replace(' ', '\\ ') + '/node_modules/.bin/bower install'),
+                    command: path.resolve(cwd + '/node_modules/.bin/bower --allow-root install'),
                     options: {
-                        stdout: true
+                        stdout: true,
+                        stdin: false
                     }
                 },
+
+                testem: {
+                    command: path.resolve(cwd + '/node_modules/.bin/testem ci -f core/test/client/testem.json'),
+                    options: {
+                        stdout: true,
+                        stdin: false
+                    }
+                },
+
+                test: {
+                    command: function (test) {
+                        return 'node ' + mochaPath  + ' --timeout=15000 --ui=bdd --reporter=spec core/test/' + test;
+                    }
+                },
+
                 // #### Generate coverage report
                 // See the `grunt test-coverage` task in the section on [Testing](#testing) for more information.
                 coverage: {
-                    command: function () {
-                        // **Note:** will only work on windows if mocha is globally installed
-                        var cmd = !!process.platform.match(/^win/) ? 'mocha' : './node_modules/mocha/bin/mocha';
-                        return cmd +
-                            ' --timeout 15000 --reporter html-cov > coverage.html ./core/test/blanket_coverage.js';
-                    },
-                    execOptions: {
-                        env: 'NODE_ENV=' + process.env.NODE_ENV
-                    }
+                    command: 'node ' + mochaPath + ' --timeout 15000 --reporter html-cov > coverage.html ' +
+                    path.resolve(cwd + '/core/test/blanket_coverage.js')
+                },
+
+                shrinkwrap: {
+                    command: 'npm shrinkwrap'
                 }
             },
 
-            // ### grunt-contrib-handlebars
-            // Compile handlebars templates into a JST file for the admin client (old)
-            handlebars: {
-                core: {
+            // ### grunt-sass
+            // compile sass to css
+            sass: {
+                compress: {
                     options: {
-                        namespace: 'JST',
-                        processName: function (filename) {
-                            filename = filename.replace('core/clientold/tpl/', '');
-                            return filename.replace('.hbs', '');
-                        }
+                        outputStyle: 'compressed',
+                        sourceMap: true
                     },
-                    files: {
-                        'core/clientold/tpl/hbs-tpl.js': 'core/clientold/tpl/**/*.hbs'
-                    }
+                    files: [
+                        {dest: path.resolve('core/client/assets/css/<%= pkg.name %>.min.css'), src: path.resolve('core/client/assets/sass/screen.scss')},
+                        {dest: path.resolve('core/client/docs/dist/css/<%= pkg.name %>.min.css'), src: path.resolve('core/client/assets/sass/screen.scss')}
+                    ]
+                }
+            },
+
+            // ### grunt-autoprefixer
+            // Autoprefix all the things, for the last 2 versions of major browsers
+            autoprefixer: {
+                options: {
+                    silent: true, // suppress logging
+                    map: true, // Use and update the sourcemap
+                    browsers: ['last 2 versions', '> 1%', 'Explorer 10']
+                },
+                ghost: {
+                    src: 'core/client/assets/css/<%= pkg.name %>.min.css',
+                    dest: 'core/client/assets/css/<%= pkg.name %>.min.css'
+                },
+                docs: {
+                    src: 'core/client/docs/dist/css/<%= pkg.name %>.min.css',
+                    dest: 'core/client/docs/dist/css/<%= pkg.name %>.min.css'
                 }
             },
 
@@ -271,14 +384,37 @@ var path           = require('path'),
             emberTemplates: {
                 dev: {
                     options: {
+                        templateCompilerPath: 'bower_components/ember/ember-template-compiler.js',
+                        handlebarsPath: 'bower_components/handlebars/handlebars.js',
+                        templateNamespace: 'HTMLBars',
                         templateBasePath: /core\/client\//,
                         templateFileExtensions: /\.hbs/,
                         templateRegistration: function (name, template) {
-                            return grunt.config.process("define('ghost/") + name + "', ['exports'], function(__exports__){ __exports__['default'] = " + template + "; });";
+                            return grunt.config.process('define(\'ghost/') +
+                                name + '\', [\'exports\'], function(__exports__){ __exports__[\'default\'] = ' +
+                                template + '; });';
                         }
                     },
                     files: {
-                        "core/built/scripts/templates-ember.js": "core/client/templates/**/*.hbs"
+                        'core/built/scripts/templates-dev.js': 'core/client/templates/**/*.hbs'
+                    }
+                },
+
+                prod: {
+                    options: {
+                        templateCompilerPath: 'bower_components/ember/ember-template-compiler.js',
+                        handlebarsPath: 'bower_components/handlebars/handlebars.js',
+                        templateNamespace: 'HTMLBars',
+                        templateBasePath: /core\/client\//,
+                        templateFileExtensions: /\.hbs/,
+                        templateRegistration: function (name, template) {
+                            return grunt.config.process('define(\'ghost/') +
+                                name + '\', [\'exports\'], function(__exports__){ __exports__[\'default\'] = ' +
+                                template + '; });';
+                        }
+                    },
+                    files: {
+                        'core/built/scripts/templates.js': 'core/client/templates/**/*.hbs'
                     }
                 }
             },
@@ -294,18 +430,45 @@ var path           = require('path'),
                     files: [{
                         expand: true,
                         cwd: 'core/client/',
-                        src: ['**/*.js'],
+                        src: ['**/*.js', '!loader.js', '!config-*.js'],
                         dest: '.tmp/ember-transpiled/'
+                    }]
+                },
+                tests: {
+                    type: 'amd',
+                    moduleName: function (path) {
+                        return 'ghost/tests/' + path;
+                    },
+                    files: [{
+                        expand: true,
+                        cwd: 'core/test/client/',
+                        src: ['**/*.js'],
+                        dest: '.tmp/ember-tests-transpiled/'
                     }]
                 }
             },
 
-            // ### grunt-es6-module-transpiler
-            // Compiles Ember es6 modules
+            // ### grunt-concat-sourcemap
+            // Concatenates transpiled ember app
             concat_sourcemap: {
-                client: {
-                    src: ['.tmp/ember-transpiled/**/*.js'],
-                    dest: 'core/built/scripts/ghost-dev-ember.js',
+                dev: {
+                    src: ['.tmp/ember-transpiled/**/*.js', 'core/client/loader.js'],
+                    dest: 'core/built/scripts/ghost-dev.js',
+                    options: {
+                        sourcesContent: true
+                    }
+                },
+                tests: {
+                    src: ['.tmp/ember-tests-transpiled/**/*.js'],
+                    dest: 'core/built/scripts/ghost-tests.js',
+                    options: {
+                        sourcesContent: true
+                    }
+                },
+                prod: {
+                    src: ['.tmp/ember-transpiled/**/*.js', 'core/built/scripts/templates.js',
+                    'core/client/loader.js'],
+                    dest: 'core/built/scripts/ghost.js',
                     options: {
                         sourcesContent: true
                     }
@@ -331,10 +494,20 @@ var path           = require('path'),
             // Clean up files as part of other tasks
             clean: {
                 built: {
-                    src: ['core/built/**']
+                    src: [
+                        'core/built/**',
+                        'core/client/assets/img/contributors/**',
+                        'core/client/templates/-contributors.hbs'
+                    ]
                 },
                 release: {
                     src: ['<%= paths.releaseBuild %>/**']
+                },
+                css: {
+                    src: [
+                        'core/client/assets/css/**',
+                        'core/client/docs/dist/css/**'
+                    ]
                 },
                 test: {
                     src: ['content/data/ghost-test.db']
@@ -354,15 +527,8 @@ var path           = require('path'),
                         dest: 'core/built/public/',
                         expand: true
                     }, {
-                        cwd: 'bower_components/ghost-ui/dist/',
-                        src: ['**'],
-                        dest: 'core/client/assets/',
-                        expand: true
-                    }, {
-                        cwd: 'bower_components/ghost-ui/dist/',
-                        src: ['**'],
-                        dest: 'core/clientold/assets/',
-                        expand: true
+                        src: 'core/client/config-dev.js',
+                        dest: 'core/client/config.js'
                     }]
                 },
                 prod: {
@@ -372,15 +538,8 @@ var path           = require('path'),
                         dest: 'core/built/public/',
                         expand: true
                     }, {
-                        cwd: 'bower_components/ghost-ui/dist/',
-                        src: ['**'],
-                        dest: 'core/client/assets/',
-                        expand: true
-                    }, {
-                        cwd: 'bower_components/ghost-ui/dist/',
-                        src: ['**'],
-                        dest: 'core/clientold/assets/',
-                        expand: true
+                        src: 'core/client/config-prod.js',
+                        dest: 'core/client/config.js'
                     }]
                 },
                 release: {
@@ -390,15 +549,8 @@ var path           = require('path'),
                         dest: 'core/built/public/',
                         expand: true
                     }, {
-                        cwd: 'bower_components/ghost-ui/dist/',
-                        src: ['**'],
-                        dest: 'core/client/assets/',
-                        expand: true
-                    }, {
-                        cwd: 'bower_components/ghost-ui/dist/',
-                        src: ['**'],
-                        dest: 'core/clientold/assets/',
-                        expand: true
+                        src: 'core/client/config-prod.js',
+                        dest: 'core/client/config.js'
                     }, {
                         expand: true,
                         src: buildGlob,
@@ -424,146 +576,77 @@ var path           = require('path'),
             // concatenate multiple JS files into a single file ready for use
             concat: {
                 dev: {
-                    files: {
-                        'core/built/scripts/vendor.js': [
-                            'bower_components/jquery/dist/jquery.js',
-                            'bower_components/jquery-ui/ui/jquery-ui.js',
-                            'core/clientold/assets/lib/jquery-utils.js',
-                            'core/clientold/assets/lib/uploader.js',
+                    nonull: true,
+                    dest: 'core/built/scripts/vendor-dev.js',
+                    src: [
+                        'bower_components/loader.js/loader.js',
+                        'bower_components/jquery/dist/jquery.js',
+                        'bower_components/ember/ember.debug.js',
+                        'bower_components/ember-data/ember-data.js',
+                        'bower_components/ember-resolver/dist/ember-resolver.js',
+                        'bower_components/ic-ajax/dist/globals/main.js',
+                        'bower_components/ember-load-initializers/ember-load-initializers.js',
+                        'bower_components/validator-js/validator.js',
+                        'bower_components/codemirror/lib/codemirror.js',
+                        'bower_components/codemirror/addon/mode/overlay.js',
+                        'bower_components/codemirror/mode/markdown/markdown.js',
+                        'bower_components/codemirror/mode/gfm/gfm.js',
+                        'bower_components/showdown-ghost/src/showdown.js',
+                        'bower_components/moment/moment.js',
+                        'bower_components/keymaster/keymaster.js',
+                        'bower_components/device/lib/device.js',
+                        'bower_components/jquery-ui/ui/jquery-ui.js',
+                        'bower_components/jquery-file-upload/js/jquery.fileupload.js',
+                        'bower_components/fastclick/lib/fastclick.js',
+                        'bower_components/nprogress/nprogress.js',
+                        'bower_components/ember-simple-auth/simple-auth.js',
+                        'bower_components/ember-simple-auth/simple-auth-oauth2.js',
+                        'bower_components/google-caja/html-css-sanitizer-bundle.js',
+                        'bower_components/nanoscroller/bin/javascripts/jquery.nanoscroller.js',
+                        'bower_components/jqueryui-touch-punch/jquery.ui.touch-punch.js',
 
-                            'bower_components/lodash/dist/lodash.underscore.js',
-                            'bower_components/backbone/backbone.js',
-                            'bower_components/handlebars/handlebars.runtime.js',
-                            'bower_components/moment/moment.js',
-                            'bower_components/jquery-file-upload/js/jquery.fileupload.js',
-                            'bower_components/codemirror/lib/codemirror.js',
-                            'bower_components/codemirror/addon/mode/overlay.js',
-                            'bower_components/codemirror/mode/markdown/markdown.js',
-                            'bower_components/codemirror/mode/gfm/gfm.js',
-                            'bower_components/showdown/src/showdown.js',
-                            'bower_components/validator-js/validator.js',
-
-                            'core/shared/lib/showdown/extensions/ghostimagepreview.js',
-                            'core/shared/lib/showdown/extensions/ghostgfm.js',
-
-                            // TODO: Remove or replace
-                            'core/clientold/assets/vendor/shortcuts.js',
-                            'core/clientold/assets/vendor/to-title-case.js',
-
-                            'bower_components/Countable/Countable.js',
-                            'bower_components/fastclick/lib/fastclick.js',
-                            'bower_components/nprogress/nprogress.js'
-                        ],
-
-                        'core/built/scripts/helpers.js': [
-                            'core/clientold/init.js',
-
-                            'core/clientold/mobile-interactions.js',
-                            'core/clientold/toggle.js',
-                            'core/clientold/markdown-actions.js',
-                            'core/clientold/helpers/index.js',
-                            'core/clientold/assets/lib/editor/index.js',
-                            'core/clientold/assets/lib/editor/markerManager.js',
-                            'core/clientold/assets/lib/editor/uploadManager.js',
-                            'core/clientold/assets/lib/editor/markdownEditor.js',
-                            'core/clientold/assets/lib/editor/htmlPreview.js',
-                            'core/clientold/assets/lib/editor/scrollHandler.js',
-                            'core/clientold/assets/lib/editor/mobileCodeMirror.js'
-                        ],
-
-                        'core/built/scripts/templates.js': [
-                            'core/clientold/tpl/hbs-tpl.js'
-                        ],
-
-                        'core/built/scripts/models.js': [
-                            'core/clientold/models/**/*.js'
-                        ],
-
-                        'core/built/scripts/views.js': [
-                            'core/clientold/views/**/*.js',
-                            'core/clientold/router.js'
-                        ]
-                    }
+                        'core/shared/lib/showdown/extensions/ghostimagepreview.js',
+                        'core/shared/lib/showdown/extensions/ghostgfm.js',
+                        'core/shared/lib/showdown/extensions/ghostfootnotes.js',
+                        'core/shared/lib/showdown/extensions/ghosthighlight.js'
+                    ]
                 },
-                'dev-ember': {
-                    files: {
-                        'core/built/scripts/vendor-ember.js': [
-                            'core/client/assets/vendor/loader.js',
-                            'bower_components/jquery/dist/jquery.js',
-                            'bower_components/handlebars/handlebars.js',
-                            'bower_components/ember/ember.js',
-                            'bower_components/ember-data/ember-data.js',
-                            'bower_components/ember-resolver/dist/ember-resolver.js',
-                            'bower_components/ic-ajax/dist/globals/main.js',
-                            'bower_components/ember-load-initializers/ember-load-initializers.js',
-                            'bower_components/validator-js/validator.js',
-                            'bower_components/codemirror/lib/codemirror.js',
-                            'bower_components/codemirror/addon/mode/overlay.js',
-                            'bower_components/codemirror/mode/markdown/markdown.js',
-                            'bower_components/codemirror/mode/gfm/gfm.js',
-                            'bower_components/showdown/src/showdown.js',
-                            'bower_components/moment/moment.js',
 
-                            'core/shared/lib/showdown/extensions/ghostimagepreview.js',
-                            'core/shared/lib/showdown/extensions/ghostgfm.js',
-                        ]
-                    }
-                },
                 prod: {
-                    files: {
-                        'core/built/scripts/ghost.js': [
-                            'bower_components/jquery/dist/jquery.js',
-                            'bower_components/jquery-ui/ui/jquery-ui.js',
-                            'core/clientold/assets/lib/jquery-utils.js',
-                            'core/clientold/assets/lib/uploader.js',
+                    nonull: true,
+                    dest: 'core/built/scripts/vendor.js',
+                    src: [
+                        'bower_components/loader.js/loader.js',
+                        'bower_components/jquery/dist/jquery.js',
+                        'bower_components/ember/ember.prod.js',
+                        'bower_components/ember-data/ember-data.prod.js',
+                        'bower_components/ember-resolver/dist/ember-resolver.js',
+                        'bower_components/ic-ajax/dist/globals/main.js',
+                        'bower_components/ember-load-initializers/ember-load-initializers.js',
+                        'bower_components/validator-js/validator.js',
+                        'bower_components/codemirror/lib/codemirror.js',
+                        'bower_components/codemirror/addon/mode/overlay.js',
+                        'bower_components/codemirror/mode/markdown/markdown.js',
+                        'bower_components/codemirror/mode/gfm/gfm.js',
+                        'bower_components/showdown-ghost/src/showdown.js',
+                        'bower_components/moment/moment.js',
+                        'bower_components/keymaster/keymaster.js',
+                        'bower_components/device/lib/device.js',
+                        'bower_components/jquery-ui/ui/jquery-ui.js',
+                        'bower_components/jquery-file-upload/js/jquery.fileupload.js',
+                        'bower_components/fastclick/lib/fastclick.js',
+                        'bower_components/nprogress/nprogress.js',
+                        'bower_components/ember-simple-auth/simple-auth.js',
+                        'bower_components/ember-simple-auth/simple-auth-oauth2.js',
+                        'bower_components/google-caja/html-css-sanitizer-bundle.js',
+                        'bower_components/nanoscroller/bin/javascripts/jquery.nanoscroller.js',
+                        'bower_components/jqueryui-touch-punch/jquery.ui.touch-punch.js',
 
-                            'bower_components/lodash/dist/lodash.underscore.js',
-                            'bower_components/backbone/backbone.js',
-                            'bower_components/handlebars/handlebars.runtime.js',
-                            'bower_components/moment/moment.js',
-                            'bower_components/jquery-file-upload/js/jquery.fileupload.js',
-                            'bower_components/codemirror/lib/codemirror.js',
-                            'bower_components/codemirror/addon/mode/overlay.js',
-                            'bower_components/codemirror/mode/markdown/markdown.js',
-                            'bower_components/codemirror/mode/gfm/gfm.js',
-                            'bower_components/showdown/src/showdown.js',
-                            'bower_components/validator-js/validator.js',
-
-                            'core/shared/lib/showdown/extensions/ghostimagepreview.js',
-                            'core/shared/lib/showdown/extensions/ghostgfm.js',
-
-                            // TODO: Remove or replace
-                            'core/clientold/assets/vendor/shortcuts.js',
-                            'core/clientold/assets/vendor/to-title-case.js',
-
-                            'bower_components/Countable/Countable.js',
-                            'bower_components/fastclick/lib/fastclick.js',
-                            'bower_components/nprogress/nprogress.js',
-
-                            'core/clientold/init.js',
-
-                            'core/clientold/mobile-interactions.js',
-                            'core/clientold/toggle.js',
-                            'core/clientold/markdown-actions.js',
-                            'core/clientold/helpers/index.js',
-
-                            'core/clientold/assets/lib/editor/index.js',
-                            'core/clientold/assets/lib/editor/markerManager.js',
-                            'core/clientold/assets/lib/editor/uploadManager.js',
-                            'core/clientold/assets/lib/editor/markdownEditor.js',
-                            'core/clientold/assets/lib/editor/htmlPreview.js',
-                            'core/clientold/assets/lib/editor/scrollHandler.js',
-                            'core/clientold/assets/lib/editor/mobileCodeMirror.js',
-
-                            'core/clientold/tpl/hbs-tpl.js',
-
-                            'core/clientold/models/**/*.js',
-
-                            'core/clientold/views/**/*.js',
-
-                            'core/clientold/router.js'
-                        ]
-                    }
+                        'core/shared/lib/showdown/extensions/ghostimagepreview.js',
+                        'core/shared/lib/showdown/extensions/ghostgfm.js',
+                        'core/shared/lib/showdown/extensions/ghostfootnotes.js',
+                        'core/shared/lib/showdown/extensions/ghosthighlight.js'
+                    ]
                 }
             },
 
@@ -571,19 +654,33 @@ var path           = require('path'),
             // Minify concatenated javascript files ready for production
             uglify: {
                 prod: {
+                    options: {
+                        sourceMap: true
+                    },
                     files: {
-                        'core/built/scripts/ghost.min.js': 'core/built/scripts/ghost.js',
-                        'core/built/public/jquery.min.js': 'core/built/public/jquery.js'
+                        'core/built/public/jquery.min.js': 'core/built/public/jquery.js',
+                        'core/built/scripts/vendor.min.js': 'core/built/scripts/vendor.js',
+                        'core/built/scripts/ghost.min.js': 'core/built/scripts/ghost.js'
+                    }
+                },
+                release: {
+                    options: {
+                        sourceMap: false
+                    },
+                    files: {
+                        'core/built/public/jquery.min.js': 'core/built/public/jquery.js',
+                        'core/built/scripts/vendor.min.js': 'core/built/scripts/vendor.js',
+                        'core/built/scripts/ghost.min.js': 'core/built/scripts/ghost.js'
                     }
                 }
             },
 
             // ### grunt-update-submodules
             // Grunt task to update git submodules
-            "update_submodules": {
+            update_submodules: {
                 default: {
                     options: {
-                        params: false // blanks command-line parameters
+                        params: '--init'
                     }
                 }
             }
@@ -597,12 +694,14 @@ var path           = require('path'),
         // ### Spawn Casper.js
         // Custom test runner for our Casper.js functional tests
         // This really ought to be refactored into a separate grunt task module
-        grunt.registerTask('spawnCasperJS', function () {
+        grunt.registerTask('spawnCasperJS', function (target) {
+            target = _.contains(['client', 'setup'], target) ? target + '/' : undefined;
+
             var done = this.async(),
                 options = ['host', 'noPort', 'port', 'email', 'password'],
                 args = ['test']
-                    .concat(grunt.option('target') || ['admin/', 'frontend/'])
-                    .concat(['--includes=base.js', '--verbose', '--log-level=debug', '--port=2369']);
+                    .concat(grunt.option('target') || target || ['client/'])
+                    .concat(['--includes=base.js', '--log-level=debug', '--port=2369']);
 
             // Forward parameters from grunt to casperjs
             _.each(options, function processOption(option) {
@@ -610,6 +709,17 @@ var path           = require('path'),
                     args.push('--' + option + '=' + grunt.option(option));
                 }
             });
+
+            if (grunt.option('fail-fast')) {
+                args.push('--fail-fast');
+            }
+
+            // Show concise logs in Travis as ours are getting too long
+            if (grunt.option('concise') || process.env.TRAVIS) {
+                args.push('--concise');
+            } else {
+                args.push('--verbose');
+            }
 
             grunt.util.spawn({
                 cmd: 'casperjs',
@@ -654,7 +764,6 @@ var path           = require('path'),
         // Run `grunt docs` to generate annotated source code using the documentation described in the code comments.
         grunt.registerTask('docs', 'Generate Docs', ['docker']);
 
-
         // ## Testing
 
         // Ghost has an extensive set of test suites. The following section documents the various types of tests
@@ -673,29 +782,83 @@ var path           = require('path'),
                 cfg.express.test.options.node_env = process.env.NODE_ENV;
             });
 
-        // #### Load Config *(Utility Task)*
+        // #### Ensure Config *(Utility Task)*
         // Make sure that we have a `config.js` file when running tests
         // Ghost requires a `config.js` file to specify the database settings etc. Ghost comes with an example file:
         // `config.example.js` which is copied and renamed to `config.js` by the bootstrap process
-        grunt.registerTask('loadConfig', function () {
-            var done = this.async();
-            bootstrap().then(function () {
+        grunt.registerTask('ensureConfig', function () {
+            var config = require('./core/server/config'),
+                done = this.async();
+            config.load().then(function () {
                 done();
+            }).catch(function (err) {
+                grunt.fail.fatal(err.stack);
             });
+        });
+
+        // #### Reset Database to "New" state *(Utility Task)*
+        // Drops all database tables and then runs the migration process to put the database
+        // in a "new" state.
+        grunt.registerTask('cleanDatabase', function () {
+            var done = this.async(),
+                models    = require('./core/server/models'),
+                migration = require('./core/server/data/migration');
+
+            migration.reset().then(function () {
+                return models.init();
+            }).then(function () {
+                return migration.init();
+            }).then(function () {
+                done();
+            }).catch(function (err) {
+                grunt.fail.fatal(err.stack);
+            });
+        });
+
+        grunt.registerTask('test', function (test) {
+            if (!test) {
+                grunt.log.write('no test provided');
+            }
+
+            grunt.task.run('test-setup', 'shell:test:' + test);
         });
 
         // ### Validate
         // **Main testing task**
         //
-        // `grunt validate` will lint and test your local Ghost codebase.
+        // `grunt validate` will build, lint and test your local Ghost codebase.
         //
         // `grunt validate` is one of the most important and useful grunt tasks that we have available to use. It
-        // manages the setup and running of jshint as well as the 4 test suites. See the individual sub tasks below
-        // for details of each of the test suites.
+        // manages the build of your environment and then calls `grunt test`
         //
-        // `grunt validate` is called by `npm test`.
+        // `grunt validate` is called by `npm test` and is used by Travis.
         grunt.registerTask('validate', 'Run tests and lint code',
-            ['shell:bower', 'concat:dev', 'jshint', 'test-routes', 'test-unit', 'test-integration', 'test-functional']);
+            ['init', 'test-all']);
+
+        // ### Test-All
+        // **Main testing task**
+        //
+        // `grunt test-all` will lint and test your pre-built local Ghost codebase.
+        //
+        // `grunt test-all` runs jshint and jscs as well as all 6 test suites. See the individual sub tasks below for
+        // details of each of the test suites.
+        //
+        grunt.registerTask('test-all', 'Run tests and lint code',
+            ['lint', 'test-routes', 'test-module', 'test-unit', 'test-integration', 'test-functional', 'shell:testem']
+        );
+
+        // ### Lint
+        //
+        // `grunt lint` will run the linter and the code style checker so you can make sure your code is pretty
+        grunt.registerTask('lint', 'Run the code style checks and linter',
+            ['jshint', 'jscs']
+        );
+
+        // ### test-setup *(utility)(
+        // `grunt test-setup` will run all the setup tasks required for running tests
+        grunt.registerTask('test-setup', 'Setup ready to run tests',
+            ['clean:test', 'setTestEnv', 'ensureConfig']
+        );
 
         // ### Unit Tests *(sub task)*
         // `grunt test-unit` will run just the unit tests
@@ -705,17 +868,18 @@ var path           = require('path'),
         //
         // `NODE_ENV=testing grunt mochacli:section`
         //
-        // If you need to run an individual unit test file, you can do so, providing you have mocha installed globally by
-        // using a command in the form:
+        // If you need to run an individual unit test file, you can do so, providing you have mocha installed globally
+        // by using a command in the form:
         //
         // `NODE_ENV=testing mocha --timeout=15000 --ui=bdd --reporter=spec core/test/unit/config_spec.js`
         //
-        // Unit tests are run with [mocha](http://visionmedia.github.io/mocha/) using
+        // Unit tests are run with [mocha](http://mochajs.org/) using
         // [should](https://github.com/visionmedia/should.js) to describe the tests in a highly readable style.
         // Unit tests do **not** touch the database.
         // A coverage report can be generated for these tests using the `grunt test-coverage` task.
         grunt.registerTask('test-unit', 'Run unit tests (mocha)',
-            ['clean:test', 'setTestEnv', 'loadConfig', 'mochacli:unit']);
+            ['test-setup', 'mochacli:unit']
+        );
 
         // ### Integration tests *(sub task)*
         // `grunt test-integration` will run just the integration tests
@@ -728,9 +892,15 @@ var path           = require('path'),
         //
         // `NODE_ENV=testing grunt mochacli:api`
         //
-        // Integration tests are run with [mocha](http://visionmedia.github.io/mocha/) using
+        // Integration tests are run with [mocha](http://mochajs.org/) using
         // [should](https://github.com/visionmedia/should.js) to describe the tests in a highly readable style.
         // Integration tests are different to the unit tests because they make requests to the database.
+        //
+        // If you need to run an individual integration test file you can do so, providing you have mocha installed
+        // globally, by using a command in the form (replace path to api_tags_spec.js with the test file you want to
+        // run):
+        //
+        // `NODE_ENV=testing mocha --timeout=15000 --ui=bdd --reporter=spec core/test/integration/api/api_tags_spec.js`
         //
         // Their purpose is to test that both the api and models behave as expected when the database layer is involved.
         // These tests are run against sqlite3, mysql and pg on travis and ensure that differences between the databases
@@ -738,7 +908,8 @@ var path           = require('path'),
         //
         // A coverage report can be generated for these tests using the `grunt test-coverage` task.
         grunt.registerTask('test-integration', 'Run integration tests (mocha + db access)',
-            ['clean:test', 'setTestEnv', 'loadConfig', 'mochacli:integration']);
+            ['test-setup', 'mochacli:integration']
+        );
 
         // ### Route tests *(sub task)*
         // `grunt test-routes` will run just the route tests
@@ -748,7 +919,7 @@ var path           = require('path'),
         //
         // `NODE_ENV=testing mocha --timeout=15000 --ui=bdd --reporter=spec core/test/functional/routes/admin_test.js`
         //
-        // Route tests are run with [mocha](http://visionmedia.github.io/mocha/) using
+        // Route tests are run with [mocha](http://mochajs.org/) using
         // [should](https://github.com/visionmedia/should.js) and [supertest](https://github.com/visionmedia/supertest)
         // to describe and create the tests.
         //
@@ -759,16 +930,32 @@ var path           = require('path'),
         // are working as expected, including checking the headers and status codes received. It is very easy and
         // quick to test many permutations of routes / urls in the system.
         grunt.registerTask('test-routes', 'Run functional route tests (mocha)',
-            ['clean:test', 'setTestEnv', 'loadConfig', 'mochacli:routes']);
+            ['test-setup', 'mochacli:routes']
+        );
+
+        // ### Module tests *(sub task)*
+        // `grunt test-module` will run just the module tests
+        //
+        // The purpose of the module tests is to ensure that Ghost can be used as an npm module and exposes all
+        // required methods to interact with it.
+        grunt.registerTask('test-module', 'Run functional module tests (mocha)',
+            ['test-setup', 'mochacli:module']
+        );
+
+        // ### Ember unit tests *(sub task)*
+        // `grunt testem` will run just the ember unit tests
+        grunt.registerTask('testem', 'Run the ember unit tests',
+            ['test-setup', 'shell:testem']
+        );
 
         // ### Functional tests *(sub task)*
         // `grunt test-functional` will run just the functional tests
         //
         // You can use the `--target` argument to run any individual test file, or the admin or frontend tests:
         //
-        // `grunt test-functional --target=admin/editor_test.js` - run just the editor tests
+        // `grunt test-functional --target=client/editor_test.js` - run just the editor tests
         //
-        // `grunt test-functional --target=admin/` - run all of the tests in the admin directory
+        // `grunt test-functional --target=client/` - run all of the tests in the client directory
         //
         // Functional tests are run with [phantom.js](http://phantomjs.org/) and defined using the testing api from
         // [casper.js](http://docs.casperjs.org/en/latest/testing.html).
@@ -780,7 +967,16 @@ var path           = require('path'),
         // The purpose of the functional tests is to ensure that Ghost is working as is expected from a user perspective
         // including buttons and other important interactions in the admin UI.
         grunt.registerTask('test-functional', 'Run functional interface tests (CasperJS)',
-            ['clean:test', 'setTestEnv', 'loadConfig', 'copy:dev', 'express:test', 'spawnCasperJS', 'express:test:stop']
+            ['test-setup', 'cleanDatabase', 'express:test', 'spawnCasperJS', 'express:test:stop', 'test-functional-setup']
+        );
+
+        // ### Functional tests for the setup process
+        // `grunt test-functional-setup will run just the functional tests for the setup page.
+        //
+        // Setup only works with a brand new database, so it needs to run isolated from the rest of
+        // the functional tests.
+        grunt.registerTask('test-functional-setup', 'Run functional tests for setup',
+            ['test-setup', 'cleanDatabase', 'express:test', 'spawnCasperJS:setup', 'express:test:stop']
         );
 
         // ### Coverage
@@ -793,8 +989,8 @@ var path           = require('path'),
         //
         // Key areas for coverage are: helpers and theme elements, apps / GDK, the api and model layers.
         grunt.registerTask('test-coverage', 'Generate unit and integration (mocha) tests coverage report',
-            ['clean:test', 'setTestEnv', 'loadConfig', 'shell:coverage']);
-
+            ['test-setup', 'shell:coverage']
+        );
 
         // ## Building assets
         //
@@ -830,10 +1026,97 @@ var path           = require('path'),
 
         // ### Ember Build *(Utility Task)*
         // All tasks related to building the Ember client code including transpiling ES6 modules and building templates
-        grunt.registerTask('emberBuild', 'Build Ember JS & templates for development',
-            ['clean:tmp', 'emberTemplates:dev', 'transpile', 'concat_sourcemap']);
+        grunt.registerTask('emberBuildDev', 'Build Ember JS & templates for development',
+            ['clean:tmp', 'buildAboutPage', 'emberTemplates:dev', 'transpile', 'concat_sourcemap:dev', 'concat_sourcemap:tests']);
 
+        // ### Ember Build *(Utility Task)*
+        // All tasks related to building the Ember client code including transpiling ES6 modules and building templates
+        grunt.registerTask('emberBuildProd', 'Build Ember JS & templates for production',
+            ['clean:tmp', 'buildAboutPage', 'emberTemplates:prod', 'transpile', 'concat_sourcemap:prod']);
 
+        // ### CSS Build *(Utility Task)*
+        // Build the CSS files from the SCSS files
+        grunt.registerTask('css', 'Build Client CSS',
+            ['sass', 'autoprefixer']);
+
+        // ### Build About Page *(Utility Task)*
+        // Builds the github contributors partial template used on the Settings/About page,
+        // and downloads the avatar for each of the users.
+        // Run by any task that compiles the ember assets (emberBuildDev, emberBuildProd)
+        //     or manually via `grunt buildAboutPage`.
+        // Change which version you're working against by setting the "releaseTag" below.
+        //
+        // Only builds if the contributors template does not exist.
+        // To force a build regardless, supply the --force option.
+        //     `grunt buildAboutPage --force`
+        grunt.registerTask('buildAboutPage', 'Compile assets for the About Ghost page', function () {
+            var done = this.async(),
+                templatePath = 'core/client/templates/-contributors.hbs',
+                imagePath = 'core/client/assets/img/contributors/',
+                ninetyDaysAgo = Date.now() - (1000 * 60 * 60 * 24 * 90),
+                oauthKey = process.env.GITHUB_OAUTH_KEY;
+
+            if (fs.existsSync(templatePath) && !grunt.option('force')) {
+                grunt.log.writeln('Contributors template already exists.');
+                grunt.log.writeln('Skipped'.bold);
+                return done();
+            }
+
+            grunt.verbose.writeln('Downloading release and contributor information from GitHub');
+
+            return Promise.join(
+                Promise.promisify(fs.mkdirs)(imagePath),
+                getTopContribs({
+                    user: 'tryghost',
+                    repo: 'ghost',
+                    oauthKey: oauthKey,
+                    releaseDate: ninetyDaysAgo,
+                    count: 20,
+                    retry: true
+                })
+            ).then(function (results) {
+                var contributors = results[1],
+                    contributorTemplate = '<li>\n    <a href="<%githubUrl%>" title="<%name%>">\n' +
+                    '        <img src="{{gh-path "admin" "/img/contributors"}}/<%name%>" alt="<%name%>">\n' +
+                    '    </a>\n</li>',
+
+                    downloadImagePromise = function (url, name) {
+                        return new Promise(function (resolve, reject) {
+                            request(url)
+                            .pipe(fs.createWriteStream(imagePath + name))
+                            .on('close', resolve)
+                            .on('error', reject);
+                        });
+                    };
+
+                grunt.verbose.writeln('Creating contributors template.');
+                grunt.file.write(templatePath,
+                    // Map contributors to the template.
+                    _.map(contributors, function (contributor) {
+                        return contributorTemplate
+                            .replace(/<%githubUrl%>/g, contributor.githubUrl)
+                            .replace(/<%name%>/g, contributor.name);
+                    }).join('\n')
+                );
+
+                grunt.verbose.writeln('Downloading images for top contributors');
+                return Promise.all(_.map(contributors, function (contributor) {
+                    return downloadImagePromise(contributor.avatarUrl + '&s=60', contributor.name);
+                }));
+            }).then(done).catch(function (error) {
+                grunt.log.error(error);
+
+                if (error.http_status) {
+                    grunt.log.writeln('GitHub API request returned status: ' + error.http_status);
+                }
+
+                if (error.ratelimit_limit) {
+                    grunt.log.writeln('Rate limit data: limit: %d, remaining: %d, reset: %s', error.ratelimit_limit, error.ratelimit_remaining, moment.unix(error.ratelimit_reset).fromNow());
+                }
+
+                done(false);
+            });
+        });
         // ### Init assets
         // `grunt init` - will run an initial asset build for you
         //
@@ -853,15 +1136,15 @@ var path           = require('path'),
         //
         // It is otherwise the same as running `grunt`, but is only used when running Ghost in the `production` env.
         grunt.registerTask('prod', 'Build JS & templates for production',
-            ['handlebars', 'concat', 'uglify', 'copy:prod']);
+            ['concat:prod', 'copy:prod', 'emberBuildProd', 'uglify:prod', 'master-warn']);
 
         // ### Default asset build
         // `grunt` - default grunt task
         //
-        // Compiles handlebars templates, concatenates javascript files for the admin UI into a handful of files instead
+        // Compiles concatenates javascript files for the admin UI into a handful of files instead
         // of many files, and makes sure the bower dependencies are in the right place.
         grunt.registerTask('default', 'Build JS & templates for development',
-            ['handlebars', 'concat', 'copy:dev', 'emberBuild']);
+            ['concat:dev', 'copy:dev', 'css', 'emberBuildDev']);
 
         // ### Live reload
         // `grunt dev` - build assets on the fly whilst developing
@@ -875,7 +1158,7 @@ var path           = require('path'),
         //
         // Note that the current implementation of watch only works with casper, not other themes.
         grunt.registerTask('dev', 'Dev Mode; watch files and restart server on changes',
-           ['handlebars', 'concat', 'copy:dev', 'emberBuild', 'express:dev', 'watch']);
+           ['default', 'express:dev', 'watch']);
 
         // ### Release
         // Run `grunt release` to create a Ghost release zip file.
@@ -884,11 +1167,12 @@ var path           = require('path'),
         // either environment, and packages all the files up into a zip.
         grunt.registerTask('release',
             'Release task - creates a final built zip\n' +
-            ' - Do our standard build steps (handlebars, etc)\n' +
+            ' - Do our standard build steps \n' +
             ' - Copy files to release-folder/#/#{version} directory\n' +
             ' - Clean out unnecessary files (travis, .git*, etc)\n' +
             ' - Zip files in release-folder to dist-folder/#{version} directory',
-            ['shell:bower', 'update_submodules', 'handlebars', 'concat', 'uglify', 'clean:release', 'copy:release', 'compress:release']);
+            ['init', 'concat:prod', 'copy:prod', 'emberBuildProd', 'uglify:release', 'clean:release',
+                'shell:shrinkwrap', 'copy:release', 'compress:release']);
     };
 
 // Export the configuration

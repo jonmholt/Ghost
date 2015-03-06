@@ -1,34 +1,23 @@
  /*globals describe, before, beforeEach, afterEach, it */
-var testUtils = require('../../utils'),
-    should    = require('should'),
+ /*jshint expr:true*/
+var testUtils     = require('../../utils'),
+    should        = require('should'),
+    _             = require('lodash'),
 
     // Stuff we are testing
-    DataGenerator = require('../../utils/fixtures/data-generator'),
     PostAPI       = require('../../../server/api/posts');
 
 describe('Post API', function () {
+    // Keep the DB clean
+    before(testUtils.teardown);
+    afterEach(testUtils.teardown);
+    beforeEach(testUtils.setup('users:roles', 'perms:post', 'posts', 'perms:init'));
 
-    before(function (done) {
-        testUtils.clearData().then(function () {
-            done();
-        }).catch(done);
-    });
+    function extractFirstPost(posts) {
+        return _.filter(posts, {id: 1})[0];
+    }
 
-    beforeEach(function (done) {
-        testUtils.initData()
-            .then(function () {
-                return testUtils.insertDefaultFixtures();
-            })
-            .then(function () {
-                done();
-            }).catch(done);
-    });
-
-    afterEach(function (done) {
-        testUtils.clearData().then(function () {
-            done();
-        }).catch(done);
-    });
+    should.exist(PostAPI);
 
     it('can browse', function (done) {
         PostAPI.browse().then(function (results) {
@@ -48,15 +37,17 @@ describe('Post API', function () {
             should.exist(results);
             should.exist(results.posts);
             results.posts.length.should.be.above(0);
-            firstPost = results.posts[0];
+            firstPost = extractFirstPost(results.posts);
             return PostAPI.read({slug: firstPost.slug, include: 'tags'});
         }).then(function (found) {
             var post;
 
             should.exist(found);
-            testUtils.API.checkResponse(found.posts[0], 'post');
+            testUtils.API.checkResponse(found.posts[0], 'post', 'tags');
 
             post = found.posts[0];
+
+            post.created_at.should.be.an.instanceof(Date);
 
             should.exist(post.tags);
             post.tags.length.should.be.above(0);

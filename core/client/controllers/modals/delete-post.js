@@ -1,40 +1,34 @@
-/*global alert */
-
 var DeletePostController = Ember.Controller.extend({
+    actions: {
+        confirmAccept: function () {
+            var self = this,
+                model = this.get('model');
+
+            // definitely want to clear the data store and post of any unsaved, client-generated tags
+            model.updateTags();
+
+            model.destroyRecord().then(function () {
+                self.get('dropdown').closeDropdowns();
+                self.transitionToRoute('posts.index');
+                self.notifications.showSuccess('Your post has been deleted.', {delayed: true});
+            }, function () {
+                self.notifications.showError('Your post could not be deleted. Please try again.');
+            });
+        },
+
+        confirmReject: function () {
+            return false;
+        }
+    },
+
     confirm: {
         accept: {
-            func: function () {
-                // @TODO: make this real
-                alert('Deleting post');
-                // self.model.destroy({
-                //     wait: true
-                // }).then(function () {
-                //     // Redirect to content screen if deleting post from editor.
-                //     if (window.location.pathname.indexOf('editor') > -1) {
-                //         window.location = Ghost.paths.subdir + '/ghost/content/';
-                //     }
-                //     Ghost.notifications.addItem({
-                //         type: 'success',
-                //         message: 'Your post has been deleted.',
-                //         status: 'passive'
-                //     });
-                // }, function () {
-                //     Ghost.notifications.addItem({
-                //         type: 'error',
-                //         message: 'Your post could not be deleted. Please try again.',
-                //         status: 'passive'
-                //     });
-                // });
-            },
             text: 'Delete',
-            buttonClass: 'button-delete'
+            buttonClass: 'btn btn-red'
         },
         reject: {
-            func: function () {
-                return true;
-            },
             text: 'Cancel',
-            buttonClass: 'button'
+            buttonClass: 'btn btn-default btn-minor'
         }
     }
 });
