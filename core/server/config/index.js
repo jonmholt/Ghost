@@ -1,25 +1,24 @@
+// # Config
 // General entry point for all configuration data
-//
-// This file itself is a wrapper for the root level config.js file.
-// All other files that need to reference config.js should use this file.
-
 var path          = require('path'),
     Promise       = require('bluebird'),
+    chalk         = require('chalk'),
     crypto        = require('crypto'),
     fs            = require('fs'),
     url           = require('url'),
     _             = require('lodash'),
-    knex          = require('knex'),
+
     validator     = require('validator'),
-    requireTree   = require('../require-tree').readAll,
+    readDirectory = require('../utils/read-directory'),
+    readThemes    = require('../utils/read-themes'),
     errors        = require('../errors'),
     configUrl     = require('./url'),
     packageInfo   = require('../../../package.json'),
+    i18n          = require('../i18n'),
     appRoot       = path.resolve(__dirname, '../../../'),
     corePath      = path.resolve(appRoot, 'core/'),
     testingEnvs   = ['testing', 'testing-mysql', 'testing-pg'],
-    defaultConfig = {},
-    knexInstance;
+    defaultConfig = {};
 
 function ConfigManager(config) {
     /**
@@ -30,8 +29,11 @@ function ConfigManager(config) {
     this._config = {};
 
     // Allow other modules to be externally accessible.
+    this.urlJoin = configUrl.urlJoin;
     this.urlFor = configUrl.urlFor;
     this.urlPathForPost = configUrl.urlPathForPost;
+    this.apiUrl = configUrl.apiUrl;
+    this.getBaseUrl = configUrl.getBaseUrl;
 
     // If we're given an initial config object then we can set it.
     if (config && _.isObject(config)) {
@@ -76,31 +78,12 @@ ConfigManager.prototype.init = function (rawConfig) {
     // just the object appropriate for this NODE_ENV
     self.set(rawConfig);
 
-    return Promise.all([requireTree(self._config.paths.themePath), requireTree(self._config.paths.appPath)]).then(function (paths) {
+    return Promise.all([readThemes(self._config.paths.themePath), readDirectory(self._config.paths.appPath)]).then(function (paths) {
         self._config.paths.availableThemes = paths[0];
         self._config.paths.availableApps = paths[1];
         return self._config;
     });
 };
-
-function configureDriver(client) {
-    var pg;
-
-    if (client === 'pg' || client === 'postgres' || client === 'postgresql') {
-        try {
-            pg = require('pg');
-        } catch (e) {
-            pg = require('pg.js');
-        }
-
-        // By default PostgreSQL returns data as strings along with an OID that identifies
-        // its type.  We're setting the parser to convert OID 20 (int8) into a javascript
-        // integer.
-        pg.types.setTypeParser(20, function (val) {
-            return val === null ? null : parseInt(val, 10);
-        });
-    }
-}
 
 /**
  * Allows you to set the config object.
@@ -108,7 +91,10 @@ function configureDriver(client) {
  */
 ConfigManager.prototype.set = function (config) {
     var localPath = '',
+        defaultStorage = 'local-file-store',
         contentPath,
+        activeStorage,
+        storagePath,
         subdir,
         assetHash;
 
@@ -139,6 +125,10 @@ ConfigManager.prototype.set = function (config) {
 
     subdir = localPath === '/' ? '' : localPath;
 
+    if (!_.isEmpty(subdir)) {
+        this._config.slugs.protected.push(subdir.split('/').pop());
+    }
+
     // Allow contentPath to be over-written by passed in config object
     // Otherwise default to default content path location
     contentPath = this._config.paths.contentPath || path.resolve(appRoot, 'content');
@@ -146,15 +136,19 @@ ConfigManager.prototype.set = function (config) {
     assetHash = this._config.assetHash ||
         (crypto.createHash('md5').update(packageInfo.version + Date.now()).digest('hex')).substring(0, 10);
 
-    if (!knexInstance && this._config.database && this._config.database.client) {
-        configureDriver(this._config.database.client);
-        knexInstance = knex(this._config.database);
+    // Protect against accessing a non-existent object.
+    // This ensures there's always at least a storage object
+    // because it's referenced in multiple places.
+    this._config.storage = this._config.storage || {};
+    activeStorage = this._config.storage.active || defaultStorage;
+
+    if (activeStorage === defaultStorage) {
+        storagePath = path.join(corePath, '/server/storage/');
+    } else {
+        storagePath = path.join(contentPath, 'storage');
     }
 
     _.merge(this._config, {
-        database: {
-            knex: knexInstance
-        },
         ghostVersion: packageInfo.version,
         paths: {
             appRoot:          appRoot,
@@ -162,6 +156,8 @@ ConfigManager.prototype.set = function (config) {
             config:           this._config.paths.config || path.join(appRoot, 'config.js'),
             configExample:    path.join(appRoot, 'config.example.js'),
             corePath:         corePath,
+
+            storage:          path.join(storagePath, activeStorage),
 
             contentPath:      contentPath,
             themePath:        path.resolve(contentPath, 'themes'),
@@ -176,17 +172,30 @@ ConfigManager.prototype.set = function (config) {
 
             availableThemes:  this._config.paths.availableThemes || {},
             availableApps:    this._config.paths.availableApps || {},
-            builtScriptPath:  path.join(corePath, 'built/scripts/')
+            clientAssets:     path.join(corePath, '/built/assets/')
+        },
+        storage: {
+            active: activeStorage
         },
         theme: {
             // normalise the URL by removing any trailing slash
             url: this._config.url ? this._config.url.replace(/\/$/, '') : ''
         },
+        routeKeywords: {
+            tag: 'tag',
+            author: 'author',
+            page: 'page',
+            preview: 'p',
+            private: 'private'
+        },
         slugs: {
             // Used by generateSlug to generate slugs for posts, tags, users, ..
             // reserved slugs are reserved but can be extended/removed by apps
             // protected slugs cannot be changed or removed
-            reserved: ['admin', 'app', 'apps', 'archive', 'archives', 'categories', 'category', 'dashboard', 'feed', 'ghost-admin', 'login', 'logout', 'page', 'pages', 'post', 'posts', 'public', 'register', 'setup', 'signin', 'signout', 'signup', 'tag', 'tags', 'user', 'users', 'wp-admin', 'wp-login'],
+            reserved: ['admin', 'app', 'apps', 'archive', 'archives', 'categories',
+            'category', 'dashboard', 'feed', 'ghost-admin', 'login', 'logout',
+            'page', 'pages', 'post', 'posts', 'public', 'register', 'setup',
+            'signin', 'signout', 'signup', 'user', 'users', 'wp-admin', 'wp-login'],
             protected: ['ghost', 'rss']
         },
         uploads: {
@@ -227,8 +236,9 @@ ConfigManager.prototype.load = function (configFilePath) {
     /* Check for config file and copy from config.example.js
         if one doesn't exist. After that, start the server. */
     return new Promise(function (resolve, reject) {
-        fs.exists(self._config.paths.config, function (exists) {
-            var pendingConfig;
+        fs.stat(self._config.paths.config, function (err) {
+            var exists = (err) ? false : true,
+                pendingConfig;
 
             if (!exists) {
                 pendingConfig = self.writeFile();
@@ -250,15 +260,16 @@ ConfigManager.prototype.writeFile = function () {
         configExamplePath = this._config.paths.configExample;
 
     return new Promise(function (resolve, reject) {
-        fs.exists(configExamplePath, function checkTemplate(templateExists) {
-            var read,
+        fs.stat(configExamplePath, function checkTemplate(err) {
+            var templateExists = (err) ? false : true,
+                read,
                 write,
                 error;
 
             if (!templateExists) {
-                error = new Error('Could not locate a configuration file.');
+                error = new Error(i18n.t('errors.config.couldNotLocateConfigFile.error'));
                 error.context = appRoot;
-                error.help = 'Please check your deployment for config.js or config.example.js.';
+                error.help = i18n.t('errors.config.couldNotLocateConfigFile.help');
 
                 return reject(error);
             }
@@ -266,14 +277,20 @@ ConfigManager.prototype.writeFile = function () {
             // Copy config.example.js => config.js
             read = fs.createReadStream(configExamplePath);
             read.on('error', function (err) {
-                errors.logError(new Error('Could not open config.example.js for read.'), appRoot, 'Please check your deployment for config.js or config.example.js.');
+                errors.logError(
+                    new Error(i18n.t('errors.config.couldNotOpenForReading.error', {file: 'config.example.js'})),
+                    appRoot,
+                    i18n.t('errors.config.couldNotOpenForReading.help'));
 
                 reject(err);
             });
 
             write = fs.createWriteStream(configPath);
             write.on('error', function (err) {
-                errors.logError(new Error('Could not open config.js for write.'), appRoot, 'Please check your deployment for config.js or config.example.js.');
+                errors.logError(
+                    new Error(i18n.t('errors.config.couldNotOpenForWriting.error', {file: 'config.js'})),
+                    appRoot,
+                    i18n.t('errors.config.couldNotOpenForWriting.help'));
 
                 reject(err);
             });
@@ -312,34 +329,35 @@ ConfigManager.prototype.validate = function () {
         return Promise.reject(e);
     }
 
-    // Check if we don't even have a config
-    if (!config) {
-        errors.logError(new Error('Cannot find the configuration for the current NODE_ENV'), 'NODE_ENV=' + envVal,
-            'Ensure your config.js has a section for the current NODE_ENV value and is formatted properly.');
-
-        return Promise.reject(new Error('Unable to load config for NODE_ENV=' + envVal));
-    }
-
     // Check that our url is valid
     if (!validator.isURL(config.url, {protocols: ['http', 'https'], require_protocol: true})) {
-        errors.logError(new Error('Your site url in config.js is invalid.'), config.url, 'Please make sure this is a valid url before restarting');
+        errors.logError(
+            new Error(i18n.t('errors.config.invalidUrlInConfig.description'),
+            config.url,
+            i18n.t('errors.config.invalidUrlInConfig.help')));
 
-        return Promise.reject(new Error('invalid site url'));
+        return Promise.reject(new Error(i18n.t('errors.config.invalidUrlInConfig.error')));
     }
 
     parsedUrl = url.parse(config.url || 'invalid', false, true);
 
     if (/\/ghost(\/|$)/.test(parsedUrl.pathname)) {
-        errors.logError(new Error('Your site url in config.js cannot contain a subdirectory called ghost.'), config.url, 'Please rename the subdirectory before restarting');
+        errors.logError(
+            new Error(i18n.t('errors.config.urlCannotContainGhostSubdir.description'),
+            config.url,
+            i18n.t('errors.config.urlCannotContainGhostSubdir.help')));
 
-        return Promise.reject(new Error('ghost subdirectory not allowed'));
+        return Promise.reject(new Error(i18n.t('errors.config.urlCannotContainGhostSubdir.error')));
     }
 
     // Check that we have database values
     if (!config.database || !config.database.client) {
-        errors.logError(new Error('Your database configuration in config.js is invalid.'), JSON.stringify(config.database), 'Please make sure this is a valid Bookshelf database configuration');
+        errors.logError(
+            new Error(i18n.t('errors.config.dbConfigInvalid.description')),
+            JSON.stringify(config.database),
+            i18n.t('errors.config.dbConfigInvalid.help'));
 
-        return Promise.reject(new Error('invalid database configuration'));
+        return Promise.reject(new Error(i18n.t('errors.config.dbConfigInvalid.error')));
     }
 
     hasHostAndPort = config.server && !!config.server.host && !!config.server.port;
@@ -347,9 +365,12 @@ ConfigManager.prototype.validate = function () {
 
     // Check for valid server host and port values
     if (!config.server || !(hasHostAndPort || hasSocket)) {
-        errors.logError(new Error('Your server values (socket, or host and port) in config.js are invalid.'), JSON.stringify(config.server), 'Please provide them before restarting.');
+        errors.logError(
+            new Error(i18n.t('errors.config.invalidServerValues.description')),
+            JSON.stringify(config.server),
+            i18n.t('errors.config.invalidServerValues.help'));
 
-        return Promise.reject(new Error('invalid server configuration'));
+        return Promise.reject(new Error(i18n.t('errors.config.invalidServerValues.error')));
     }
 
     return Promise.resolve(config);
@@ -378,7 +399,7 @@ ConfigManager.prototype.isPrivacyDisabled = function (privacyFlag) {
 ConfigManager.prototype.checkDeprecated = function () {
     var self = this;
     _.each(this.deprecatedItems, function (property) {
-        self.displayDeprecated(self, property.split('.'), []);
+        self.displayDeprecated(self._config, property.split('.'), []);
     });
 };
 
@@ -395,9 +416,9 @@ ConfigManager.prototype.displayDeprecated = function (item, properties, address)
         if (properties.length) {
             return self.displayDeprecated(item[property], properties, address);
         }
-        errorText = 'The configuration property [' + address.join('.').bold + '] has been deprecated.';
-        explanationText =  'This will be removed in a future version, please update your config.js file.';
-        helpText = 'Please check http://support.ghost.org/config for the most up-to-date example.';
+        errorText = i18n.t('errors.config.deprecatedProperty.error', {property: chalk.bold(address.join('.'))});
+        explanationText =  i18n.t('errors.config.deprecatedProperty.explanation');
+        helpText = i18n.t('errors.config.deprecatedProperty.help', {url: 'http://support.ghost.org/config'});
         errors.logWarn(errorText, explanationText, helpText);
     }
 };

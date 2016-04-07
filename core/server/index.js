@@ -1,45 +1,28 @@
+// # Bootup
+// This file needs serious love & refactoring
+
 // Module dependencies
 var express     = require('express'),
     hbs         = require('express-hbs'),
     compress    = require('compression'),
-    fs          = require('fs'),
     uuid        = require('node-uuid'),
-    _           = require('lodash'),
     Promise     = require('bluebird'),
-
+    i18n        = require('./i18n'),
     api         = require('./api'),
     config      = require('./config'),
     errors      = require('./errors'),
     helpers     = require('./helpers'),
-    mailer      = require('./mail'),
     middleware  = require('./middleware'),
     migrations  = require('./data/migration'),
     models      = require('./models'),
     permissions = require('./permissions'),
     apps        = require('./apps'),
-    sitemap     = require('./data/sitemap'),
+    sitemap     = require('./data/xml/sitemap'),
+    xmlrpc      = require('./data/xml/xmlrpc'),
     GhostServer = require('./ghost-server'),
+    validateThemes = require('./utils/validate-themes'),
 
-// Variables
     dbHash;
-
-function doFirstRun() {
-    var firstRunMessage = [
-        'Welcome to Ghost.',
-        'You\'re running under the <strong>',
-        process.env.NODE_ENV,
-        '</strong>environment.',
-
-        'Your URL is set to',
-        '<strong>' + config.url + '</strong>.',
-        'See <a href="http://support.ghost.org/" target="_blank">http://support.ghost.org</a> for instructions.'
-    ];
-
-    return api.notifications.add({notifications: [{
-        type: 'info',
-        message: firstRunMessage.join(' ')
-    }]}, {context: {internal: true}});
-}
 
 function initDbHashAndFirstRun() {
     return api.settings.read({key: 'dbHash', context: {internal: true}}).then(function (response) {
@@ -54,79 +37,16 @@ function initDbHashAndFirstRun() {
                 .then(function (response) {
                     dbHash = response.settings[0].value;
                     return dbHash;
-                }).then(doFirstRun);
+                    // Use `then` here to do 'first run' actions
+                });
         }
 
         return dbHash;
     });
 }
 
-// Checks for the existence of the "built" javascript files from grunt concat.
-// Returns a promise that will be resolved if all files exist or rejected if
-// any are missing.
-function builtFilesExist() {
-    var deferreds = [],
-        location = config.paths.builtScriptPath,
-
-        fileNames = process.env.NODE_ENV === 'production' ?
-            helpers.scriptFiles.production : helpers.scriptFiles.development;
-
-    function checkExist(fileName) {
-        var errorMessage = 'Javascript files have not been built.',
-            errorHelp = '\nPlease read the getting started instructions at:' +
-                        '\nhttps://github.com/TryGhost/Ghost#getting-started';
-
-        return new Promise(function (resolve, reject) {
-            fs.exists(fileName, function (exists) {
-                if (exists) {
-                    resolve(true);
-                } else {
-                    var err = new Error(errorMessage);
-
-                    err.help = errorHelp;
-                    reject(err);
-                }
-            });
-        });
-    }
-
-    fileNames.forEach(function (fileName) {
-        deferreds.push(checkExist(location + fileName));
-    });
-
-    return Promise.all(deferreds);
-}
-
-// This is run after every initialization is done, right before starting server.
-// Its main purpose is to move adding notifications here, so none of the submodules
-// should need to include api, which previously resulted in circular dependencies.
-// This is also a "one central repository" of adding startup notifications in case
-// in the future apps will want to hook into here
-function initNotifications() {
-    if (mailer.state && mailer.state.usingDirect) {
-        api.notifications.add({notifications: [{
-            type: 'info',
-            message: [
-                'Ghost is attempting to use a direct method to send e-mail.',
-                'It is recommended that you explicitly configure an e-mail service.',
-                'See <a href=\'http://support.ghost.org/mail\' target=\'_blank\'>http://support.ghost.org/mail</a> for instructions'
-            ].join(' ')
-        }]}, {context: {internal: true}});
-    }
-    if (mailer.state && mailer.state.emailDisabled) {
-        api.notifications.add({notifications: [{
-            type: 'warn',
-            message: [
-                'Ghost is currently unable to send e-mail.',
-                'See <a href=\'http://support.ghost.org/mail\' target=\'_blank\'>http://support.ghost.org/mail</a> for instructions'
-            ].join(' ')
-        }]}, {context: {internal: true}});
-    }
-}
-
-// ## Initializes the ghost application.
-// Sets up the express server instance.
-// Instantiates the ghost singleton, helpers, routes, middleware, and apps.
+// ## Initialise Ghost
+// Sets up the express server instances, runs init on a bunch of stuff, configures views, helpers, routes and more
 // Finally it returns an instance of GhostServer
 function init(options) {
     // Get reference to an express app instance.
@@ -138,12 +58,12 @@ function init(options) {
     // It returns a promise that is resolved when the application
     // has finished starting up.
 
+    // Initialize Internationalization
+    i18n.init();
+
     // Load our config.js file from the local file system.
     return config.load(options.config).then(function () {
         return config.checkDeprecated();
-    }).then(function () {
-        // Make sure javascript files have been built via grunt concat
-        return builtFilesExist();
     }).then(function () {
         // Initialise the models
         return models.init();
@@ -164,22 +84,20 @@ function init(options) {
         return Promise.join(
             // Check for or initialise a dbHash.
             initDbHashAndFirstRun(),
-            // Initialize mail
-            mailer.init(),
             // Initialize apps
             apps.init(),
             // Initialize sitemaps
-            sitemap.init()
+            sitemap.init(),
+            // Initialize xmrpc ping
+            xmlrpc.init()
         );
     }).then(function () {
         var adminHbs = hbs.create();
 
-        // Output necessary notifications on init
-        initNotifications();
         // ##Configuration
 
-        // return the correct mime type for woff filess
-        express['static'].mime.define({'application/font-woff': ['woff']});
+        // return the correct mime type for woff files
+        express.static.mime.define({'application/font-woff': ['woff']});
 
         // enabled gzip compression by default
         if (config.server.compress !== false) {
@@ -201,13 +119,17 @@ function init(options) {
         middleware(blogApp, adminApp);
 
         // Log all theme errors and warnings
-        _.each(config.paths.availableThemes._messages.errors, function (error) {
-            errors.logError(error.message, error.context, error.help);
-        });
+        validateThemes(config.paths.themePath)
+            .catch(function (result) {
+                // TODO: change `result` to something better
+                result.errors.forEach(function (err) {
+                    errors.logError(err.message, err.context, err.help);
+                });
 
-        _.each(config.paths.availableThemes._messages.warns, function (warn) {
-            errors.logWarn(warn.message, warn.context, warn.help);
-        });
+                result.warnings.forEach(function (warn) {
+                    errors.logWarn(warn.message, warn.context, warn.help);
+                });
+            });
 
         return new GhostServer(blogApp);
     });
